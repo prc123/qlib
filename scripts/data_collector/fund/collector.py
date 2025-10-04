@@ -14,7 +14,7 @@ import pandas as pd
 from loguru import logger
 from dateutil.tz import tzlocal
 from qlib.constant import REG_CN as REGION_CN
-
+#REGION_CN="cn"
 CUR_DIR = Path(__file__).resolve().parent
 sys.path.append(str(CUR_DIR.parent.parent))
 from data_collector.base import BaseCollector, BaseNormalize, BaseRun

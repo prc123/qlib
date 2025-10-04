@@ -178,6 +178,27 @@ def get_calendar_list_by_ratio(
 
     return calendar
 
+def get_proxies(authKey):
+        #青果网络代理ip
+    response = requests.get(f"https://share.proxy.qg.net/get?key={authKey}")
+    print(response.content)
+    data = response.json()
+    proxy_server = data['data'][0]["server"]
+
+    proxyUrl = "http://%(user)s:%(password)s@%(server)s" % {
+    "user": authKey,
+    "password": "BA4548F1197B",
+    "server":  proxy_server,
+}
+    proxies = {
+    "http": proxyUrl,
+    "https": proxyUrl,
+    }
+
+    return proxies
+
+
+
 
 def get_hs_stock_symbols() -> list:
     """get SH/SZ stock symbols
@@ -216,11 +237,11 @@ def get_hs_stock_symbols() -> list:
 
         _symbols = []
         page = 1
-
+        proxies= get_proxies("74B67B50")
         while True:
             params["pn"] = page
             try:
-                resp = requests.get(base_url, params=params, timeout=None)
+                resp = requests.get(base_url, params=params, proxies =proxies,timeout=None)
                 resp.raise_for_status()
                 data = resp.json()
 
@@ -249,6 +270,12 @@ def get_hs_stock_symbols() -> list:
                 time.sleep(0.5)
 
             except requests.exceptions.HTTPError as e:
+                if resp.status_code == 502:
+                    proxies= get_proxies("74B67B50")
+                    continue
+                if resp.status_code == 407:
+                    proxies= get_proxies("74B67B50")
+                    continue
                 raise requests.exceptions.HTTPError(
                     f"Request to {base_url} failed with status code {resp.status_code}"
                 ) from e
