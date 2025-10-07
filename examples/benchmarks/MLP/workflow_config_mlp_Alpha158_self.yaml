@@ -1,13 +1,13 @@
 qlib_init:
-    provider_uri: "~/.qlib/qlib_data/cn_data"
+    provider_uri: "~/.qlib/qlib_data/my_data_new"
     region: cn
-market: &market csi300
-benchmark: &benchmark SH000300
+market: &market all
+benchmark: &benchmark "1"
 data_handler_config: &data_handler_config
-    start_time: 2008-01-01
-    end_time: 2020-08-01
-    fit_start_time: 2008-01-01
-    fit_end_time: 2014-12-31
+    start_time: 2024-01-01
+    end_time: 2025-09-25
+    fit_start_time: 2024-01-01
+    fit_end_time: 2025-09-25
     instruments: *market
     infer_processors: [
         {
@@ -68,7 +68,7 @@ task:
             GPU: 0
             weight_decay: 0.0002
             pt_model_kwargs:
-              input_dim: 157 
+            input_dim: 6
     dataset:
         class: DatasetH
         module_path: qlib.data.dataset
@@ -78,9 +78,9 @@ task:
                 module_path: qlib.contrib.data.handler
                 kwargs: *data_handler_config
             segments:
-                train: [2024-01-01, 2024-12-31]
-                valid: [2025-06-01, 2025-09-30]
-                test: [2025-01-01, 2025-06-01]
+                train: [2008-01-01, 2014-12-31]
+                valid: [2015-01-01, 2016-12-31]
+                test: [2017-01-01, 2020-08-01]
     record: 
         - class: SignalRecord
           module_path: qlib.workflow.record_temp
