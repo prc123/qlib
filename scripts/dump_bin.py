@@ -158,6 +158,7 @@ class DumpDataBase:
             _calendars = df[self.date_field_name]
 
         if is_begin_end and as_set:
+
             return (_calendars.min(), _calendars.max()), set(_calendars)
         elif is_begin_end:
             return _calendars.min(), _calendars.max()
@@ -169,7 +170,11 @@ class DumpDataBase:
     def _get_source_data(self, file_path: Path) -> pd.DataFrame:
         df = read_as_df(file_path, low_memory=False)
         if self.date_field_name in df.columns:
-            df[self.date_field_name] = pd.to_datetime(df[self.date_field_name])
+            try:
+                df[self.date_field_name] = pd.to_datetime(df[self.date_field_name])
+            except ValueError as e:
+                print(df)
+                return
         # df.drop_duplicates([self.date_field_name], inplace=True)
         return df
 
@@ -317,6 +322,7 @@ class DumpDataAll(DumpDataBase):
                     if isinstance(_begin_time, pd.Timestamp) and isinstance(_end_time, pd.Timestamp):
                         _begin_time = self._format_datetime(_begin_time)
                         _end_time = self._format_datetime(_end_time)
+                        
                         symbol = self.get_symbol_from_file(file_path)
                         _inst_fields = [symbol.upper(), _begin_time, _end_time]
                         date_range_list.append(f"{self.INSTRUMENTS_SEP.join(_inst_fields)}")
@@ -327,7 +333,9 @@ class DumpDataAll(DumpDataBase):
 
     def _dump_calendars(self):
         logger.info("start dump calendars......")
-        self._calendars_list = sorted(map(pd.Timestamp, self._kwargs["all_datetime_set"]))
+        timestamps = [pd.Timestamp(dt).tz_localize(None) for dt in self._kwargs["all_datetime_set"]]
+        self._calendars_list = sorted(timestamps)
+        #self._calendars_list = sorted(map(pd.Timestamp, self._kwargs["all_datetime_set"]))
         self.save_calendars(self._calendars_list)
         logger.info("end of calendars dump.\n")
 

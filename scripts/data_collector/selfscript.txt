@@ -1,0 +1,1 @@
+python scripts/dump_bin.py dump_all --data_path  ~/.qlib/stock_data/source/cn_data_2024  --qlib_dir ~/.qlib/qlib_data/my_data_2024 --include_fields open,close,high,low,volume,factor

@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader
 from ...model.base import Model
 from ...data.dataset import DatasetH
 from ...data.dataset.handler import DataHandlerLP
+from tqdm import tqdm
 
 
 class TransformerModel(Model):
@@ -102,7 +103,7 @@ class TransformerModel(Model):
     def train_epoch(self, data_loader):
         self.model.train()
 
-        for data in data_loader:
+        for data in tqdm(data_loader):
             feature = data[:, :, 0:-1].to(self.device)
             label = data[:, -1, -1].to(self.device)
 
@@ -120,7 +121,7 @@ class TransformerModel(Model):
         scores = []
         losses = []
 
-        for data in data_loader:
+        for data in tqdm(data_loader):
             feature = data[:, :, 0:-1].to(self.device)
             label = data[:, -1, -1].to(self.device)
 

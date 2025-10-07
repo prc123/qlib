@@ -62,7 +62,7 @@ def get_proxies(authKey,password):
         "https": proxyUrl,
         }
         return proxies
-PROXIES = get_proxies("R5L6S8Q1","1C1E4041C424")
+#PROXIES = get_proxies("R5L6S8Q1","1C1E4041C424")
 PROXIES_1 ={
         "http": "http://127.0.0.1:7897",
         "https": "http://127.0.0.1:7897",

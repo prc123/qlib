@@ -1042,6 +1042,87 @@ class Run(BaseRun):
         for _index in index_list:
             get_instruments(str(qlib_data_1d_dir), _index, market_index=f"{_region}_index")
 
+    def update_data_to_csv(
+        self,
+        qlib_data_1d_dir: str,
+        end_date: str = None,
+        check_data_length: int = None,
+        delay: float = 1,
+        exists_skip: bool = False,
+    ):
+        """update yahoo data to bin
+
+        Parameters
+        ----------
+        qlib_data_1d_dir: str
+            the qlib data to be updated for yahoo, usually from: https://github.com/microsoft/qlib/tree/main/scripts#download-cn-data
+
+        end_date: str
+            end datetime, default ``pd.Timestamp(trading_date + pd.Timedelta(days=1))``; open interval(excluding end)
+        check_data_length: int
+            check data length, if not None and greater than 0, each symbol will be considered complete if its data length is greater than or equal to this value, otherwise it will be fetched again, the maximum number of fetches being (max_collector_count). By default None.
+        delay: float
+            time.sleep(delay), default 1
+        exists_skip: bool
+            exists skip, by default False
+        Notes
+        -----
+            If the data in qlib_data_dir is incomplete, np.nan will be populated to trading_date for the previous trading day
+
+        Examples
+        -------
+            $ python collector.py update_data_to_bin --qlib_data_1d_dir <user data dir> --trading_date <start date> --end_date <end date>
+        """
+
+        if self.interval.lower() != "1d":
+            logger.warning(f"currently supports 1d data updates: --interval 1d")
+
+        # download qlib 1d data
+        qlib_data_1d_dir = str(Path(qlib_data_1d_dir).expanduser().resolve())
+        if not exists_qlib_data(qlib_data_1d_dir):
+            GetData().qlib_data(
+                target_dir=qlib_data_1d_dir, interval=self.interval, region=self.region, exists_skip=exists_skip
+            )
+
+        # start/end date
+        calendar_df = pd.read_csv(Path(qlib_data_1d_dir).joinpath("calendars/day.txt"))
+        trading_date = (pd.Timestamp(calendar_df.iloc[-1, 0]) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+        if end_date is None:
+            end_date = (pd.Timestamp(trading_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+        # download data from yahoo
+        # NOTE: when downloading data from YahooFinance, max_workers is recommended to be 1
+        self.download_data(delay=delay, start=trading_date, end=end_date, check_data_length=check_data_length)
+        # NOTE: a larger max_workers setting here would be faster
+        self.max_workers = (
+            max(multiprocessing.cpu_count() - 2, 1)
+            if self.max_workers is None or self.max_workers <= 1
+            else self.max_workers
+        )
+        # normalize data
+        #self.normalize_data_1d_extend(qlib_data_1d_dir)
+
+        # dump bin
+        _dump = DumpDataUpdate(
+            data_path=self.normalize_dir,
+            qlib_dir=qlib_data_1d_dir,
+            exclude_fields="symbol,date",
+            max_workers=self.max_workers,
+        )
+        _dump.dump()
+
+        # parse index
+        # _region = self.region.lower()
+        # if _region not in ["cn", "us"]:
+        #     logger.warning(f"Unsupported region: region={_region}, component downloads will be ignored")
+        #     return
+        # index_list = ["CSI100", "CSI300"] if _region == "cn" else ["SP500", "NASDAQ100", "DJIA", "SP400"]
+        # get_instruments = getattr(
+        #     importlib.import_module(f"data_collector.{_region}_index.collector"), "get_instruments"
+        # )
+        # for _index in index_list:
+        #     get_instruments(str(qlib_data_1d_dir), _index, market_index=f"{_region}_index")
 
 if __name__ == "__main__":
     fire.Fire(Run)

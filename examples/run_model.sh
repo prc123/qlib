@@ -1,0 +1,1 @@
+qrun ./benchmarks/GRU/workflow_config_gru_Alpha158_self.yaml  

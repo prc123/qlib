@@ -1,8 +1,8 @@
 qlib_init:
-    provider_uri: "~/.qlib/qlib_data/my_data_1"
+    provider_uri: "~/.qlib/qlib_data/my_data_2019"
     region: cn
-market: &market all
-benchmark: &benchmark "1"
+market: &market csi300
+benchmark: &benchmark "SH000300"
 data_handler_config: &data_handler_config
     start_time: 2024-01-01
     end_time: 2025-09-25
@@ -57,7 +57,7 @@ task:
         kwargs:
             d_feat: 20
             hidden_size: 64
-            num_layers: 2
+            num_layers: 10
             dropout: 0.0
             n_epochs: 5
             lr: 2e-4
