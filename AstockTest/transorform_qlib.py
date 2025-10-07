@@ -63,17 +63,24 @@ class SequenceModelTrainer:
         # 使用tqdm显示训练进度
         pbar = tqdm(train_loader, desc="训练", leave=False)
         
-        for batch_idx, (sequences, targets, info) in enumerate(pbar):
-            sequences = sequences.to(self.device)
-            targets = targets.to(self.device)
-            
+        for batch_idx, sequences in enumerate(pbar):
+            x = sequences[:,:,:-1].to(self.device)
+            x = torch.rand(x.shape, device=self.device)
+            print(x)
+            # x_mean, x_std = np.mean(x, axis=0), np.std(x, axis=0)
+            # x = (x - x_mean) / (x_std + 1e-5)
+            # x = np.clip(x, -5, 5)
+            targets = sequences[:,-1,-1].to(self.device)
             # 前向传播
+            # print("x and targets:")
+            # print(x)
             self.optimizer.zero_grad()
-            outputs = self.model(sequences)
+            outputs = self.model(x)
             
             # 计算损失
             loss = self.criterion(outputs.squeeze(), targets)
-            
+            # print("outputs and targets:")
+            # print(outputs)
             # 反向传播
             loss.backward()
             
@@ -104,11 +111,14 @@ class SequenceModelTrainer:
         pbar = tqdm(val_loader, desc="验证", leave=False)
         
         with torch.no_grad():
-            for sequences, targets, info in pbar:
-                sequences = sequences.to(self.device)
-                targets = targets.to(self.device)
+            for sequences in pbar:
+                x = sequences[:,:,:-1].to(self.device)
+                # x_mean, x_std = np.mean(x, axis=0), np.std(x, axis=0)
+                # x = (x - x_mean) / (x_std + 1e-5)
+                # x = np.clip(x, -5, 5)
+                targets = sequences[:,-1,-1].to(self.device)    
                 
-                outputs = self.model(sequences)
+                outputs = self.model(x)
                 loss = self.criterion(outputs.squeeze(), targets)
                 
                 total_loss += loss.item()
@@ -293,7 +303,7 @@ if __name__ == "__main__":
     
     # 创建模型和训练器
     # 根据StockDataset_min_v2的特征维度设置输入大小
-    #model = SimpleLSTM(input_size=8, hidden_size=64, num_layers=2, output_size=1)  # feature_columns_min_v2有8个特征
+    model = SimpleLSTM(input_size=5, hidden_size=64, num_layers=2, output_size=1)  # feature_columns_min_v2有8个特征
     
     config = {
         'learning_rate': 0.001,
@@ -306,7 +316,7 @@ if __name__ == "__main__":
     }
     
     # 使用更大的Transformer模型，增加GPU计算量
-    model = SimpleTransformerModel(input_size=5, d_model=128, nhead=8, num_layers=4, seq_len=10)
+    #model = SimpleTransformerModel(input_size=5, d_model=128, nhead=8, num_layers=4, seq_len=10)
     print(model)
     trainer = SequenceModelTrainer(model, config)
     
@@ -318,12 +328,11 @@ if __name__ == "__main__":
         config = get_yaml_config()
         dataset = get_dataset(config)
         #stock_data  = stock_data[:5000]
-        train_df,test_df,vaild_df = dataset.prepare("train"),dataset.prepare("test"),dataset.prepare("valid")
+        train_df,test_df,vaild_df = dataset.prepare(["train","test","valid"])
         #train_df,test_df,vaild_df = get_train_test_valid_easy(stock_data)
         # 创建训练和验证数据集
         # train_dataset = StockDataset_min_v2(train_df)
         # val_dataset = StockDataset_min_v2(vaild_df)
-        
         # 创建数据加载器
         train_loader = DataLoader(train_df, batch_size=512, shuffle=True,num_workers=4,pin_memory=True)
         val_loader = DataLoader(vaild_df, batch_size=512, shuffle=False,num_workers=4,pin_memory=True)
