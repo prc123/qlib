@@ -719,4 +719,6 @@ class TSDatasetH(DatasetH):
         return tsds
 
 
-__all__ = ["Optional", "Dataset", "DatasetH"]
+from .normalized_dataset import NormalizedTSDatasetH, NormalizedTSDataSampler
+
+__all__ = ["Optional", "Dataset", "DatasetH", "TSDatasetH", "NormalizedTSDatasetH", "NormalizedTSDataSampler"]

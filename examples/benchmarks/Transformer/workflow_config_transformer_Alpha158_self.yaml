@@ -1,40 +1,35 @@
 qlib_init:
-    provider_uri: "~/.qlib/qlib_data/my_data_2019"
+    provider_uri: "~/.qlib/qlib_data/my_data_new"
     region: cn
-market: &market csi300
-benchmark: &benchmark SH000300
+market: &market all
+benchmark: &benchmark "1"
 data_handler_config: &data_handler_config
-    start_time: 2024-01-01
+    start_time: 2020-01-01
     end_time: 2025-09-25
-    fit_start_time: 2024-01-01
-    fit_end_time: 2025-09-25
+    fit_start_time: 2020-01-01
+    fit_end_time: 2025-09-30
     instruments: *market
-    infer_processors: [
-        {
-            "class" : "DropCol", 
-            "kwargs":{"col_list": ["VWAP0"]}
-        },
-        {
-             "class" : "CSZFillna", 
-             "kwargs":{"fields_group": "feature"}
-        }
-    ]
-    learn_processors: [
-        {
-            "class" : "DropCol", 
-            "kwargs":{"col_list": ["VWAP0"]}
-        },
-        {
-            "class" : "DropnaProcessor", 
-            "kwargs":{"fields_group": "feature"}
-        },
-        "DropnaLabel",
-        {
-            "class": "CSZScoreNorm", 
-            "kwargs": {"fields_group": "label"}
-        }
-    ]
-    process_type: "independent"
+    infer_processors:
+        - class: FilterCol
+          kwargs:
+              fields_group: feature
+              col_list: ["RESI5", "WVMA5", "RSQR5", "KLEN", "RSQR10", "CORR5", "CORD5", "CORR10", 
+                            "ROC60", "RESI10", "VSTD5", "RSQR60", "CORR60", "WVMA60", "STD5", 
+                            "RSQR20", "CORD60", "CORD10", "CORR20", "KLOW"
+                        ]
+        - class: RobustZScoreNorm
+          kwargs:
+              fields_group: feature
+              clip_outlier: true
+        - class: Fillna
+          kwargs:
+              fields_group: feature
+    learn_processors:
+        - class: DropnaLabel
+        - class: CSRankNorm
+          kwargs:
+              fields_group: label
+    label: ["Ref($close, -2) / Ref($close, -1) - 1"] 
 
 port_analysis_config: &port_analysis_config
     strategy:
@@ -57,20 +52,14 @@ port_analysis_config: &port_analysis_config
             min_cost: 5
 task:
     model:
-        class: DNNModelPytorch
-        module_path: qlib.contrib.model.pytorch_nn
+        class: TransformerModel
+        module_path: qlib.contrib.model.pytorch_transformer_ts
         kwargs:
-            loss: mse
-            lr: 0.002
-            optimizer: adam
-            max_steps: 8000
-            batch_size: 8192
-            GPU: 0
-            weight_decay: 0.0002
-            pt_model_kwargs:
-              input_dim: 157 
+            seed: 0
+            n_jobs: 20
+            n_epochs: 200
     dataset:
-        class: DatasetH
+        class: TSDatasetH
         module_path: qlib.data.dataset
         kwargs:
             handler:
@@ -78,9 +67,10 @@ task:
                 module_path: qlib.contrib.data.handler
                 kwargs: *data_handler_config
             segments:
-                train: [2024-01-01, 2024-12-31]
-                valid: [2025-06-01, 2025-09-30]
-                test: [2025-01-01, 2025-06-01]
+                train: [2020-01-01, 2024-12-31]
+                valid: [2025-01-01, 2025-06-30]
+                test: [2025-01-01, 2025-09-30]
+            step_len: 20
     record: 
         - class: SignalRecord
           module_path: qlib.workflow.record_temp
