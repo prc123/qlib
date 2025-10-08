@@ -167,6 +167,7 @@ class GRU(Model):
         self.GRU_model.train()
 
         for data, weight in tqdm(data_loader, desc="Training"):
+            
             feature = data[:, :, 0:-1].to(self.device)
             # data_mean, data_std = np.mean(feature, axis=0), np.std(feature, axis=0)
             # feature = (feature - data_mean) / (data_std + 1e-5)

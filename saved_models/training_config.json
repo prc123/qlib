@@ -1,0 +1,8 @@
+{
+  "learning_rate": 0.001,
+  "batch_size": 512,
+  "patience": 10,
+  "grad_clip": 1.0,
+  "task_type": "regression",
+  "save_dir": "saved_models"
+}

@@ -13,6 +13,7 @@ from tqdm import tqdm
 import qlib
 from get_data import get_yaml_config, get_dataset
 from model import SimpleTransformerModel
+from qlib.data.dataset.handler import DataHandlerLP
 # 添加当前目录到Python路径，以便可以导入base_dataset模块
 sys.path.append(os.path.dirname(__file__))
 
@@ -64,29 +65,30 @@ class SequenceModelTrainer:
         pbar = tqdm(train_loader, desc="训练", leave=False)
         
         for batch_idx, sequences in enumerate(pbar):
+            
             x = sequences[:,:,:-1].to(self.device)
-            x = torch.rand(x.shape, device=self.device)
-            print(x)
+
+            #x = torch.rand(x.shape, device=self.device)
+            #print(x)
             # x_mean, x_std = np.mean(x, axis=0), np.std(x, axis=0)
             # x = (x - x_mean) / (x_std + 1e-5)
             # x = np.clip(x, -5, 5)
             targets = sequences[:,-1,-1].to(self.device)
+
             # 前向传播
             # print("x and targets:")
             # print(x)
             self.optimizer.zero_grad()
             outputs = self.model(x)
-            
             # 计算损失
             loss = self.criterion(outputs.squeeze(), targets)
-            # print("outputs and targets:")
-            # print(outputs)
+
             # 反向传播
             loss.backward()
             
             # 梯度裁剪
-            if self.config.get('grad_clip', 0) > 0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['grad_clip'])
+            # if self.config.get('grad_clip', 0) > 0:
+            #     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['grad_clip'])
             
             self.optimizer.step()
             
@@ -113,11 +115,9 @@ class SequenceModelTrainer:
         with torch.no_grad():
             for sequences in pbar:
                 x = sequences[:,:,:-1].to(self.device)
-                # x_mean, x_std = np.mean(x, axis=0), np.std(x, axis=0)
-                # x = (x - x_mean) / (x_std + 1e-5)
-                # x = np.clip(x, -5, 5)
+
                 targets = sequences[:,-1,-1].to(self.device)    
-                
+                print(targets)
                 outputs = self.model(x)
                 loss = self.criterion(outputs.squeeze(), targets)
                 
@@ -308,7 +308,6 @@ if __name__ == "__main__":
     config = {
         'learning_rate': 0.001,
         'batch_size': 512,  # 增大批次大小，提高GPU利用率
-        'epochs': 50,
         'patience': 10,
         'grad_clip': 1.0,
         'task_type': 'regression',
@@ -324,19 +323,28 @@ if __name__ == "__main__":
     # 这里需要你提供实际的股票数据文件路径
     try:
         # 示例：加载股票数据
-        qlib.init(provider_uri ="~/.qlib/qlib_data/my_data_2019/", region="cn")
-        config = get_yaml_config()
+        config = get_yaml_config(file_path=r"AstockTest\data_set.yaml")
+        qlib.init(provider_uri =config["qlib_init"]["provider_uri"], region="cn")
+        
         dataset = get_dataset(config)
         #stock_data  = stock_data[:5000]
-        train_df,test_df,vaild_df = dataset.prepare(["train","test","valid"])
+        #train_df,test_df,vaild_df = dataset.prepare(["train","test","valid"])
+        dl_train = dataset.prepare("train", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
+        dl_valid = dataset.prepare("valid", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
+        if dl_train.empty or dl_valid.empty:
+            raise ValueError("Empty data from dataset, please check your dataset config.")
+
+        # dl_train.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
+        # dl_valid.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
         #train_df,test_df,vaild_df = get_train_test_valid_easy(stock_data)
         # 创建训练和验证数据集
         # train_dataset = StockDataset_min_v2(train_df)
         # val_dataset = StockDataset_min_v2(vaild_df)
         # 创建数据加载器
-        train_loader = DataLoader(train_df, batch_size=512, shuffle=True,num_workers=4,pin_memory=True)
-        val_loader = DataLoader(vaild_df, batch_size=512, shuffle=False,num_workers=4,pin_memory=True)
-        
+        train_loader = DataLoader(dl_train, batch_size=512, shuffle=True,num_workers=4,pin_memory=True)
+        val_loader = DataLoader(dl_valid, batch_size=512, shuffle=False,num_workers=4,pin_memory=True)
+        dl_train.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
+        dl_valid.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
         # 训练模型
         results = trainer.train(train_loader, val_loader)
         

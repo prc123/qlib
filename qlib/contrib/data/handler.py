@@ -166,7 +166,7 @@ class Alpha5(DataHandlerLP):
         end_time=None,
         freq="day",
         infer_processors=[],
-        learn_processors=_DEFAULT_LEARN_PROCESSORS,
+        learn_processors=[],
         fit_start_time=None,
         fit_end_time=None,
         process_type=DataHandlerLP.PTYPE_A,

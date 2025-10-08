@@ -13,6 +13,7 @@ dist/
 *.pkl
 *.hd5
 *.csv
+*.pth
 
 .env
 .vim
