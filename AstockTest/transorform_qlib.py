@@ -67,7 +67,6 @@ class SequenceModelTrainer:
         for batch_idx, sequences in enumerate(pbar):
             
             x = sequences[:,:,:-1].to(self.device)
-
             #x = torch.rand(x.shape, device=self.device)
             #print(x)
             # x_mean, x_std = np.mean(x, axis=0), np.std(x, axis=0)
@@ -115,9 +114,7 @@ class SequenceModelTrainer:
         with torch.no_grad():
             for sequences in pbar:
                 x = sequences[:,:,:-1].to(self.device)
-
                 targets = sequences[:,-1,-1].to(self.device)    
-                print(targets)
                 outputs = self.model(x)
                 loss = self.criterion(outputs.squeeze(), targets)
                 
@@ -303,7 +300,7 @@ if __name__ == "__main__":
     
     # 创建模型和训练器
     # 根据StockDataset_min_v2的特征维度设置输入大小
-    model = SimpleLSTM(input_size=5, hidden_size=64, num_layers=2, output_size=1)  # feature_columns_min_v2有8个特征
+    #model = SimpleLSTM(input_size=5, hidden_size=64, num_layers=2, output_size=1)  # feature_columns_min_v2有8个特征
     
     config = {
         'learning_rate': 0.001,
@@ -315,50 +312,52 @@ if __name__ == "__main__":
     }
     
     # 使用更大的Transformer模型，增加GPU计算量
-    #model = SimpleTransformerModel(input_size=5, d_model=128, nhead=8, num_layers=4, seq_len=10)
+    model = SimpleTransformerModel(input_size=5, d_model=128, nhead=8, num_layers=4, seq_len=10)
+    #model = SimpleLSTM(input_size=20, hidden_size=128, num_layers=4, output_size=1)
+    # 确保模型权重为float32
+    model = model.to()
     print(model)
     trainer = SequenceModelTrainer(model, config)
     
     # 使用StockDataset_min_v2创建数据集
     # 这里需要你提供实际的股票数据文件路径
-    try:
-        # 示例：加载股票数据
-        config = get_yaml_config(file_path=r"AstockTest\data_set.yaml")
-        qlib.init(provider_uri =config["qlib_init"]["provider_uri"], region="cn")
-        
-        dataset = get_dataset(config)
-        #stock_data  = stock_data[:5000]
-        #train_df,test_df,vaild_df = dataset.prepare(["train","test","valid"])
-        dl_train = dataset.prepare("train", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
-        dl_valid = dataset.prepare("valid", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
-        if dl_train.empty or dl_valid.empty:
-            raise ValueError("Empty data from dataset, please check your dataset config.")
 
-        # dl_train.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
-        # dl_valid.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
-        #train_df,test_df,vaild_df = get_train_test_valid_easy(stock_data)
-        # 创建训练和验证数据集
-        # train_dataset = StockDataset_min_v2(train_df)
-        # val_dataset = StockDataset_min_v2(vaild_df)
-        # 创建数据加载器
-        train_loader = DataLoader(dl_train, batch_size=512, shuffle=True,num_workers=4,pin_memory=True)
-        val_loader = DataLoader(dl_valid, batch_size=512, shuffle=False,num_workers=4,pin_memory=True)
-        dl_train.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
-        dl_valid.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
-        # 训练模型
-        results = trainer.train(train_loader, val_loader)
+    # 示例：加载股票数据
+    config = get_yaml_config(file_path=r"AstockTest\data_set.yaml")
+    qlib.init(provider_uri =config["qlib_init"]["provider_uri"], region="cn")
+    
+    dataset = get_dataset(config)
+    #stock_data  = stock_data[:5000]
+    #train_df,test_df,vaild_df = dataset.prepare(["train","test","valid"])
+    dl_train = dataset.prepare("train", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
+    dl_valid = dataset.prepare("valid", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
+    if dl_train.empty or dl_valid.empty:
+        raise ValueError("Empty data from dataset, please check your dataset config.")
+
+    # dl_train.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
+    # dl_valid.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
+    #train_df,test_df,vaild_df = get_train_test_valid_easy(stock_data)
+    # 创建训练和验证数据集
+    # 使用Qlib适配的数据加载器，确保数据类型正确
+    train_loader = DataLoader(dl_train, batch_size=512, shuffle=True,num_workers=4,pin_memory=True)
+    val_loader = DataLoader(dl_valid, batch_size=512, shuffle=False,num_workers=4,pin_memory=True)
+    # 配置缺失值处理（在数据加载器创建后）
+    dl_train.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
+    dl_valid.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
+    # 训练模型
+    results = trainer.train(train_loader, val_loader)
+    
+    # 评估模型
+    evaluation = trainer.evaluate(val_loader)
+    print(f"评估结果: MSE={evaluation['mse']:.4f}, MAE={evaluation['mae']:.4f}, RMSE={evaluation['rmse']:.4f}")
+    
+    # 保存最终模型
+    trainer.save_model('final_model.pth')
+    print("训练完成！")
         
-        # 评估模型
-        evaluation = trainer.evaluate(val_loader)
-        print(f"评估结果: MSE={evaluation['mse']:.4f}, MAE={evaluation['mae']:.4f}, RMSE={evaluation['rmse']:.4f}")
-        
-        # 保存最终模型
-        trainer.save_model('final_model.pth')
-        print("训练完成！")
-        
-    except FileNotFoundError:
-        print("股票数据文件未找到，请检查文件路径")
-        print("你可以修改文件路径或使用自己的数据")
-    except Exception as e:
-        print(f"数据加载错误: {e}")
-        print("请确保数据格式正确")
+    # except FileNotFoundError:
+    #     print("股票数据文件未找到，请检查文件路径")
+    #     print("你可以修改文件路径或使用自己的数据")
+    # except Exception as e:
+    #     print(f"数据加载错误: {e}")
+    #     print("请确保数据格式正确")

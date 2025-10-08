@@ -1,7 +1,7 @@
 qlib_init:
     provider_uri: "~/.qlib/qlib_data/my_data_2019"
     region: cn
-market: &market csi300
+market: &market all
 benchmark: &benchmark "SH000300"
 data_handler_config: &data_handler_config
     start_time: 2024-01-01
@@ -29,7 +29,7 @@ data_handler_config: &data_handler_config
         - class: CSRankNorm
           kwargs:
               fields_group: label
-    label: ["Ref($close, -2) / Ref($close, -1) - 1"] 
+    label: ["(Ref($close, -2) / Ref($close, -1) - 1)>0.01"] 
     #label: ["$close"] 
 
 port_analysis_config: &port_analysis_config
