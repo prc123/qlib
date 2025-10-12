@@ -1,0 +1,1 @@
+python scripts/dump_bin.py dump_all --data_path  C:\Users\Administrator\Documents\stock_ananisy\split_stock --qlib_dir ~/.qlib/qlib_data/my_data_10_12 --include_fields open,close,high,low,volume
