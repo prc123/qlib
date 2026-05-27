@@ -9,6 +9,13 @@ data_handler_config: &data_handler_config
     fit_start_time: 2025-10-10
     fit_end_time: 2025-10-10
     instruments: *market
+    infer_processors:
+    - class: Fillna
+      kwargs:
+        fields_group: feature
+    # - class: DropnaProcessor
+    #   kwargs:
+    #     fields_group: label
 port_analysis_config: &port_analysis_config
     strategy:
         class: TopkDropoutStrategy
