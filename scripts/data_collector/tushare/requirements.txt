@@ -1,0 +1,6 @@
+tushare
+loguru
+fire
+numpy
+pandas
+tqdm
