@@ -386,32 +386,51 @@ class TushareNormalizeCN1d(BaseNormalize):
 
 
 class TushareNormalizeCN1dExtend(TushareNormalizeCN1d):
-    """Extended normalize for appending new data to existing qlib data."""
+    """Extended normalize for appending new data to existing qlib data.
+
+    Pre-computes per-symbol latest-date snapshots from the existing qlib data
+    during init, then discards the full DataFrame.  This keeps the object
+    lightweight so multiprocessing pickle serialization is fast, and avoids
+    scanning the full multi-index on every file.
+    """
 
     def __init__(self, old_qlib_data_dir, date_field_name="date", symbol_field_name="symbol", **kwargs):
         super().__init__(date_field_name, symbol_field_name)
         self.column_list = ["open", "high", "low", "close", "volume", "factor", "change"]
-        self.old_qlib_data = self._get_old_data(old_qlib_data_dir)
+        self._old_latest = self._build_old_latest_map(old_qlib_data_dir)
 
-    def _get_old_data(self, qlib_data_dir):
+    def _build_old_latest_map(self, qlib_data_dir):
+        """Load old qlib data once, extract the latest row per symbol, discard the rest.
+
+        Returns a dict mapping uppercase symbol (e.g. ``SH600000``) to
+        ``(latest_date: Timestamp, {col: value})``.
+        """
         qlib_data_dir = str(Path(qlib_data_dir).expanduser().resolve())
         qlib.init(provider_uri=qlib_data_dir, expression_cache=None, dataset_cache=None)
         df = D.features(D.instruments("all"), ["$" + col for col in self.column_list])
         df.columns = self.column_list
-        return df
+
+        result = {}
+        # groupby on a MultiIndex level does NOT drop the level, so each group
+        # still has a (instrument, datetime) MultiIndex — use .iloc[-1] and
+        # grab the datetime from the second level of the index.
+        for instrument, group in df.groupby(level="instrument"):
+            last_date = group.index[-1][1]  # element [1] = datetime from tuple
+            row = group.iloc[-1]
+            result[instrument] = (last_date, {c: row[c] for c in self.column_list[:-1]})
+        logger.info(f"Built old-latest map for {len(result)} symbols")
+        return result
 
     def normalize(self, df):
         df = super().normalize(df)
         df.set_index(self._date_field_name, inplace=True)
         symbol_name = df[self._symbol_field_name].iloc[0]
-        old_symbol_list = self.old_qlib_data.index.get_level_values("instrument").unique().tolist()
-        if str(symbol_name).upper() not in old_symbol_list:
+        entry = self._old_latest.get(str(symbol_name).upper())
+        if entry is None:
             return df.reset_index()
-        old_df = self.old_qlib_data.loc[str(symbol_name).upper()]
-        latest_date = old_df.index[-1]
+        latest_date, old_latest_data = entry
         df = df.loc[latest_date:]
         new_latest_data = df.iloc[0]
-        old_latest_data = old_df.loc[latest_date]
         for col in self.column_list[:-1]:
             if col == "volume":
                 df[col] = df[col] / (new_latest_data[col] / old_latest_data[col])
@@ -482,6 +501,219 @@ class Run(BaseRun):
         """
         super().download_data(max_collector_count, delay, start, end, check_data_length, limit_nums,
                               listed_only=listed_only)
+
+    def download_data_bulk(
+        self,
+        start=None,
+        end=None,
+        delay=0.3,
+        listed_only=False,
+    ):
+        """Download A-share daily data using bulk-by-date approach.
+
+        Fetches ALL stocks at once for each trading date via
+        ``pro.daily(trade_date=date)`` and ``pro.adj_factor(trade_date=date)``.
+        Much faster than per-stock download for short date ranges (e.g. daily
+        updates: ~15 API calls instead of ~11000).
+
+        Parameters
+        ----------
+        start : str
+            Start date (YYYY-MM-DD).
+        end : str
+            End date (YYYY-MM-DD).
+        delay : float
+            Sleep between API calls (seconds), default 0.3.
+        listed_only : bool
+            If True, filter output to only currently listed stocks.
+        """
+        from pathlib import Path
+
+        pro = ts.pro_api(TUSHARE_TOKEN)
+
+        # Get trading calendar
+        _start = start or "20160101"
+        _end = end or pd.Timestamp.now().strftime("%Y%m%d")
+        cal_df = pro.trade_cal(exchange="SSE", start_date=_start.replace("-", ""), end_date=_end.replace("-", ""))
+        cal_df = cal_df[cal_df["is_open"] == 1]
+        trade_dates = sorted(cal_df["cal_date"].tolist())
+
+        if not trade_dates:
+            logger.warning("No trading dates found in range.")
+            return
+
+        logger.info(f"Bulk download: {len(trade_dates)} trading days ({trade_dates[0]} -> {trade_dates[-1]})")
+
+        source_dir = Path(self.source_dir)
+        source_dir.mkdir(parents=True, exist_ok=True)
+
+        # If listed_only, get the set of currently listed ts_codes
+        listed_set = None
+        if listed_only:
+            try:
+                stock_df = pro.stock_basic(exchange="", list_status="L", fields="ts_code")
+                if stock_df is not None and not stock_df.empty:
+                    listed_set = set(stock_df["ts_code"].tolist())
+                    logger.info(f"Filtering to {len(listed_set)} listed stocks")
+            except Exception:
+                logger.warning("Failed to get listed stocks, not filtering")
+
+        # Phase 1: Fetch daily data for all trading dates
+        all_daily = []
+        for i, td in enumerate(trade_dates):
+            try:
+                df = pro.daily(trade_date=td)
+                if df is not None and not df.empty:
+                    all_daily.append(df)
+            except Exception as e:
+                logger.warning(f"  daily {td} error: {e}")
+            if (i + 1) % 200 == 0:
+                logger.info(f"  Daily: {i+1}/{len(trade_dates)} dates done")
+            time.sleep(delay)
+
+        if not all_daily:
+            logger.error("No daily data fetched.")
+            return
+
+        daily_df = pd.concat(all_daily, ignore_index=True)
+        logger.info(f"Daily rows: {len(daily_df)}, stocks: {daily_df['ts_code'].nunique()}")
+
+        # Phase 2: Fetch adj_factor for all trading dates
+        all_adj = []
+        for i, td in enumerate(trade_dates):
+            try:
+                adj = pro.adj_factor(trade_date=td)
+                if adj is not None and not adj.empty:
+                    all_adj.append(adj)
+            except Exception as e:
+                logger.warning(f"  adj {td} error: {e}")
+            if (i + 1) % 200 == 0:
+                logger.info(f"  Adj: {i+1}/{len(trade_dates)} dates done")
+            time.sleep(delay)
+
+        adj_df = pd.concat(all_adj, ignore_index=True)
+        logger.info(f"Adj_factor rows: {len(adj_df)}, stocks: {adj_df['ts_code'].nunique()}")
+
+        # Merge and process
+        daily_df["trade_date"] = pd.to_datetime(daily_df["trade_date"])
+        adj_df["trade_date"] = pd.to_datetime(adj_df["trade_date"])
+        merged = daily_df.merge(
+            adj_df[["ts_code", "trade_date", "adj_factor"]],
+            on=["ts_code", "trade_date"], how="left",
+        )
+
+        # adjclose = close * adj_factor
+        merged["adjclose"] = merged["close"] * merged["adj_factor"]
+
+        # Phase 3: Fetch daily_basic for fundamental/market data
+        all_basic = []
+        for i, td in enumerate(trade_dates):
+            try:
+                basic = pro.daily_basic(trade_date=td)
+                if basic is not None and not basic.empty:
+                    all_basic.append(basic)
+            except Exception as e:
+                logger.warning(f"  basic {td} error: {e}")
+            if (i + 1) % 200 == 0:
+                logger.info(f"  Basic: {i+1}/{len(trade_dates)} dates done")
+            time.sleep(delay)
+
+        if all_basic:
+            basic_df = pd.concat(all_basic, ignore_index=True)
+            basic_df["trade_date"] = pd.to_datetime(basic_df["trade_date"])
+            # Drop key columns that already exist in merged; keep everything else
+            basic_cols = [c for c in basic_df.columns if c not in ("ts_code", "trade_date") and c not in merged.columns]
+            merged = merged.merge(
+                basic_df[["ts_code", "trade_date"] + basic_cols],
+                on=["ts_code", "trade_date"], how="left",
+            )
+            logger.info(f"Daily_basic rows: {len(basic_df)}, fields: {basic_cols}")
+        else:
+            logger.warning("No daily_basic data fetched, continuing without it.")
+            basic_cols = []
+
+        # Normalize symbol: 000001.SZ -> sz000001
+        def _norm(ts_code):
+            code, exchange = ts_code.split(".")
+            if exchange.upper() == "SH":
+                return f"sh{code}"
+            elif exchange.upper() == "SZ":
+                return f"sz{code}"
+            elif exchange.upper() == "BJ":
+                return f"bj{code}"
+            else:
+                return f"{exchange.lower()}{code}"
+
+        merged["symbol"] = merged["ts_code"].apply(_norm)
+        merged["date"] = merged["trade_date"]
+
+        base_cols = ["symbol", "date", "open", "high", "low", "close", "vol", "adjclose"]
+        output_cols = base_cols + basic_cols
+        output = merged[output_cols].rename(columns={"vol": "volume"})
+        output = output.dropna(subset=["adjclose"])
+        output = output.sort_values(["symbol", "date"])
+
+        # Filter to listed stocks if requested
+        if listed_set is not None:
+            listed_mask = merged["ts_code"].isin(listed_set)
+            listed_symbols = set(merged.loc[listed_mask, "symbol"].unique())
+            output = output[output["symbol"].isin(listed_symbols)]
+
+        # Save per-symbol CSV (append if existing)
+        symbols = output["symbol"].unique()
+        logger.info(f"Saving {len(symbols)} symbol files to {source_dir}...")
+        for i, sym in enumerate(symbols):
+            sym_df = output[output["symbol"] == sym].sort_values("date")
+            dest = source_dir / f"{sym}.csv"
+            if dest.exists():
+                existing = pd.read_csv(dest)
+                combined = pd.concat([existing, sym_df], ignore_index=True)
+                combined = combined.drop_duplicates(subset=["symbol", "date"])
+                combined.to_csv(dest, index=False)
+            else:
+                sym_df.to_csv(dest, index=False)
+            if (i + 1) % 1000 == 0:
+                logger.info(f"  {i+1}/{len(symbols)}...")
+
+        # Phase 3: Download index data
+        logger.info("Downloading index data (CSI300/500/100)...")
+        _fmt = "%Y%m%d"
+        index_config = [
+            ("000300.SH", "sh000300"),
+            ("000903.SH", "sh000100"),
+            ("000905.SH", "sh000500"),
+        ]
+        for idx_code, save_name in index_config:
+            try:
+                time.sleep(delay)
+                idx_df = pro.index_daily(
+                    ts_code=idx_code,
+                    start_date=trade_dates[0],
+                    end_date=trade_dates[-1],
+                )
+                if idx_df is not None and not idx_df.empty:
+                    idx_df = idx_df.rename(columns={
+                        "trade_date": "date",
+                        "vol": "volume",
+                        "amount": "money",
+                    })
+                    idx_df["date"] = pd.to_datetime(idx_df["date"]).dt.strftime("%Y-%m-%d")
+                    idx_df["adjclose"] = idx_df["close"]
+                    idx_df["symbol"] = save_name
+                    out_cols = ["date", "open", "close", "high", "low", "volume", "money", "change", "adjclose", "symbol"]
+                    available = [c for c in out_cols if c in idx_df.columns]
+                    idx_out = idx_df[available]
+                    dest = source_dir / f"{save_name}.csv"
+                    if dest.exists():
+                        old = pd.read_csv(dest)
+                        idx_out = pd.concat([old, idx_out], ignore_index=True)
+                        idx_out = idx_out.drop_duplicates(subset=["date", "symbol"])
+                    idx_out.to_csv(dest, index=False)
+                    logger.info(f"  {save_name}: {len(idx_out)} rows")
+            except Exception as e:
+                logger.warning(f"  {save_name} error: {e}")
+
+        logger.info("Bulk download completed.")
 
     def normalize_data(self, date_field_name="date", symbol_field_name="symbol", end_date=None, **kwargs):
         """Normalize raw CSV data to qlib format.

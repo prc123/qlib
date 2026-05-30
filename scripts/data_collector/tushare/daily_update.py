@@ -2,11 +2,12 @@
 # Licensed under the MIT License.
 
 """
-Daily update script for A-share data using Tushare.
+Daily update script for A-share data using Tushare (bulk-by-date mode).
 
 Reads the existing qlib data directory to find the last available trading date,
-downloads new data since then, normalizes it (aligned with existing data),
-and dumps to qlib binary format.
+downloads new data since then using bulk-by-date queries (~15 API calls instead
+of ~11000), normalizes it (aligned with existing data), and dumps to qlib binary
+format.
 
 Usage
 -----
@@ -76,11 +77,11 @@ def daily_update(
     update_index_weights: bool = False,
     index_weight_freq: str = "ME",
 ):
-    """Run the daily data update pipeline.
+    """Run the daily data update pipeline using bulk-by-date download.
 
     Steps:
     1. Identify the last trading date in existing qlib data
-    2. Download new stock & index data from Tushare
+    2. Bulk-download new stock & index data from Tushare by date
     3. Normalize, aligned with existing data scales
     4. Dump to qlib binary format
     5. (Optional) Update index constituent weights
@@ -99,13 +100,12 @@ def daily_update(
         Parallel workers for normalize and dump steps.
         Default: ``cpu_count - 2`` (min 1).
     delay : float
-        API call delay in seconds, default 0.3.
+        API call delay in seconds, default 0.3 (~200 calls/min safe).
     update_index_weights : bool
         If True, also download the latest index constituent weights.
     index_weight_freq : str
         Frequency for index weight snapshots, default 'ME' (month-end).
     """
-    import fire
     from collector import Run
 
     qlib_dir = Path(qlib_data_1d_dir).expanduser().resolve()
@@ -114,7 +114,7 @@ def daily_update(
 
     # Determine last trading date from existing calendar
     trading_date = get_last_trading_date(qlib_dir)
-    end_date = (pd.Timestamp(trading_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    end_date = pd.Timestamp.now().strftime("%Y-%m-%d")
 
     logger.info(f"qlib data dir : {qlib_dir}")
     logger.info(f"last trading  : {trading_date}")
@@ -127,18 +127,17 @@ def daily_update(
     run = Run(
         source_dir=source_dir,
         normalize_dir=normalize_dir,
-        max_workers=1,  # download uses single worker
+        max_workers=1,
         interval="1d",
     )
 
-    # Step 1: Download new data (listed_only: skip delisted stocks for speed)
+    # Step 1: Bulk-download new data (listed_only for speed)
     logger.info("=" * 50)
-    logger.info("Step 1/4: Downloading new data from Tushare...")
-    run.download_data(
+    logger.info("Step 1/4: Bulk-downloading new data from Tushare...")
+    run.download_data_bulk(
         delay=delay,
         start=trading_date,
         end=end_date,
-        max_collector_count=1,
         listed_only=True,
     )
 
