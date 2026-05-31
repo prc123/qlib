@@ -68,6 +68,53 @@ def get_last_trading_date(qlib_data_dir: Path) -> str:
     return last_date.strftime("%Y-%m-%d")
 
 
+def _refresh_instruments(qlib_dir: Path):
+    """Extend end dates in all instrument files to match the latest calendar date."""
+    instr_dir = qlib_dir / "instruments"
+    all_path = instr_dir / "all.txt"
+    cal_path = qlib_dir / "calendars" / "day.txt"
+    if not all_path.exists() or not cal_path.exists():
+        return
+
+    cal = pd.read_csv(cal_path)
+    last_cal_date = str(cal.iloc[-1, 0])
+
+    all_df = pd.read_csv(all_path, sep="\t", header=None, names=["symbol", "start", "end"])
+    all_max_end = all_df["end"].max()
+
+    if str(all_max_end) >= last_cal_date:
+        return
+
+    # Update all.txt
+    all_changed = 0
+    for idx, row in all_df.iterrows():
+        if str(row["end"]) == str(all_max_end):
+            all_df.at[idx, "end"] = last_cal_date
+            all_changed += 1
+    if all_changed:
+        all_df.to_csv(all_path, sep="\t", header=False, index=False)
+        logger.info(f"Updated {all_changed} stocks in all.txt")
+
+    # Update other instrument files
+    all_end_map = dict(zip(all_df["symbol"].astype(str), all_df["end"]))
+    for f in sorted(instr_dir.glob("*.txt")):
+        if f.name == "all.txt":
+            continue
+        df = pd.read_csv(f, sep="\t", header=None, names=["symbol", "start", "end"])
+        changed = 0
+        for idx, row in df.iterrows():
+            sym = str(row["symbol"])
+            if str(row["end"]) == str(all_max_end):
+                df.at[idx, "end"] = last_cal_date
+                changed += 1
+            elif sym in all_end_map and str(row["end"]) != str(all_end_map[sym]):
+                df.at[idx, "end"] = all_end_map[sym]
+                changed += 1
+        if changed:
+            df.to_csv(f, sep="\t", header=False, index=False)
+            logger.info(f"Updated {changed} stocks in {f.name}")
+
+
 def daily_update(
     qlib_data_1d_dir: str,
     source_dir: str = None,
@@ -157,6 +204,9 @@ def daily_update(
         max_workers=max_workers,
     )
     _dump.dump()
+
+    # Step 3.5: Refresh instrument end dates to match the calendar
+    _refresh_instruments(qlib_dir)
 
     # Step 4: (Optional) Update index weights
     if update_index_weights:
