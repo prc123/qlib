@@ -2,23 +2,40 @@
 # Licensed under the MIT License.
 
 """
-Full historical download script for A-share data using Tushare (bulk-by-date mode).
+Full download → normalize → dump pipeline for A-share data (forward-adjusted).
 
-Downloads ALL trading days in the specified range using bulk-by-date queries,
-normalizes (fresh), and dumps to qlib binary format.  Includes full daily_basic
-fields (market cap, turnover, PE, PB, etc.).
+Uses Tushare bulk-by-date download to fetch OHLCV + adj_factor + daily_basic
+fields, then normalizes and dumps to qlib binary format.
+
+**Forward-adjustment (前复权)**:
+  adjclose = close / adj_factor (see collector.py _adjusted_price)
+  Historical prices are preserved as-is; current prices are lowered to match
+  the original capital structure. No future information leaks into history.
+
+Pipeline steps:
+  1. Bulk-download all trading days via Tushare API
+  2. Normalize each stock: calendar-align, compute change, adjust prices
+  3. Scale to first-close=1 (unitization for cross-stock comparability)
+  4. Dump to per-field .bin files under qlib_data_1d_dir
 
 Usage
 -----
-    $ python full_download.py --qlib_data_1d_dir ~/.qlib/qlib_data/cn_data_10y
+    # Full download to new data directory
+    $ python full_download.py --qlib_data_1d_dir C:/Users/pp/.qlib/qlib_data/cn_data_fwd
 
-    # Custom date range
-    $ python full_download.py --qlib_data_1d_dir ~/.qlib/qlib_data/cn_data_10y \\
-        --start_date 2020-01-01 --end_date 2026-05-29
+    # Custom date range (e.g. last 6 years)
+    $ python full_download.py --qlib_data_1d_dir C:/Users/pp/.qlib/qlib_data/cn_data_fwd \\
+        --start_date 2020-06-01 --end_date 2026-06-01
 
     # Custom source/normalize directories
-    $ python full_download.py --qlib_data_1d_dir ~/.qlib/qlib_data/cn_data_10y \\
-        --source_dir ./source_10y --normalize_dir ./normalize_10y
+    $ python full_download.py --qlib_data_1d_dir C:/Users/pp/.qlib/qlib_data/cn_data_fwd \\
+        --source_dir ./source_fwd --normalize_dir ./normalize_fwd
+
+Notes
+-----
+  - This is a FULL rebuild (not incremental). Existing qlib data will be overwritten.
+  - For daily incremental updates, use daily_update.py instead.
+  - adjclose uses forward-adjustment (前复权). See collector.py for details.
 """
 
 import sys

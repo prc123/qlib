@@ -23,6 +23,7 @@ from qlib.constant import REG_CN
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
 from qlib.data import D
+from daily_quant.ops.date_ops import BoardLimit
 from qlib.model.base import Model
 
 
@@ -159,7 +160,8 @@ def main():
     print(f"Instruments: {args.instruments}, TopK={args.topk}, N_Drop={args.n_drop}")
     print(f"Period: {args.start} ~ {args.end}")
 
-    qlib.init(provider_uri=r"C:\Users\pp\.qlib\qlib_data\cn_data_10y", region=REG_CN)
+    qlib.init(provider_uri=r"C:\Users\pp\.qlib\qlib_data\cn_data_10y", region=REG_CN,
+              custom_ops=[BoardLimit])
 
     model = model_cls()
 
@@ -198,9 +200,13 @@ def main():
             "account": args.account,
             "benchmark": "SH000300",
             "exchange_kwargs": {
-                "freq": "day", "limit_threshold": 0.095,
+                "freq": "day",
                 "deal_price": "open", "open_cost": 0.0005,
                 "close_cost": 0.0015, "min_cost": 5,
+                "limit_threshold": (
+                    "Greater($change, BoardLimit($close) * 0.98)",
+                    "Less($change, -BoardLimit($close) * 0.98)",
+                ),
             },
         },
     }

@@ -1,4 +1,4 @@
-"""Alpha158 extended with date + fundamental features (170 total).
+"""Alpha158 extended with date + fundamental + board features (171 total).
 
 Usage (via string config)::
 
@@ -56,7 +56,7 @@ _FUND_NAMES = [
 
 
 class Alpha158Date(Alpha158):
-    """Alpha158 + 6 date + 6 fundamental features, total 170 features."""
+    """Alpha158 + 6 fund + 7 date/board features, total 171 features."""
 
     def get_feature_config(self):
         conf = {

@@ -201,8 +201,8 @@ class TushareCollectorCN1d(BaseCollector):
             }
         )
 
-        # Calculate adjclose from adj_factor
-        df["adjclose"] = df["close"] * df["adj_factor"]
+        # Calculate adjclose from adj_factor (前复权: forward-adjusted)
+        df["adjclose"] = df["close"] / df["adj_factor"]
 
         # Add normalized symbol
         df["symbol"] = symbol
@@ -295,7 +295,13 @@ class TushareNormalizeCN1d(BaseNormalize):
         return tmp_series / tmp_shift - 1
 
     def _adjusted_price(self, df):
-        """Adjust OHLCV prices using factor = adjclose / close."""
+        """Adjust OHLCV prices using factor = adjclose / close.
+
+        With forward-adjusted (前复权) adjclose = close / adj_factor,
+        the factor is 1/adj_factor, which lowers current prices to
+        historical levels. Volume is NOT adjusted — raw traded shares
+        are already correct at each point in time.
+        """
         if df.empty:
             return df
         df = df.copy()
@@ -309,7 +315,7 @@ class TushareNormalizeCN1d(BaseNormalize):
             if _col not in df.columns:
                 continue
             if _col == "volume":
-                df[_col] = df[_col] / df["factor"]
+                continue  # no adjustment needed for forward-adjusted prices
             else:
                 df[_col] = df[_col] * df["factor"]
         df.index.names = [self._date_field_name]
@@ -400,25 +406,36 @@ class TushareNormalizeCN1dExtend(TushareNormalizeCN1d):
         self._old_latest = self._build_old_latest_map(old_qlib_data_dir)
 
     def _build_old_latest_map(self, qlib_data_dir):
-        """Load old qlib data once, extract the latest row per symbol, discard the rest.
+        """Read only the last ~10 calendar days of old data per symbol.
 
         Returns a dict mapping uppercase symbol (e.g. ``SH600000``) to
         ``(latest_date: Timestamp, {col: value})``.
         """
         qlib_data_dir = str(Path(qlib_data_dir).expanduser().resolve())
         qlib.init(provider_uri=qlib_data_dir, expression_cache=None, dataset_cache=None)
-        df = D.features(D.instruments("all"), ["$" + col for col in self.column_list])
+
+        # Only query the tail of the calendar — we just need the last row per stock
+        cal = pd.read_csv(Path(qlib_data_dir) / "calendars" / "day.txt")
+        last_dates = cal.iloc[-15:, 0].tolist()  # last 15 calendar days
+        start_str = str(last_dates[0])
+        end_str = str(last_dates[-1])
+
+        df = D.features(
+            D.instruments("all"),
+            ["$" + col for col in self.column_list],
+            start_time=start_str,
+            end_time=end_str,
+        )
         df.columns = self.column_list
 
         result = {}
-        # groupby on a MultiIndex level does NOT drop the level, so each group
-        # still has a (instrument, datetime) MultiIndex — use .iloc[-1] and
-        # grab the datetime from the second level of the index.
         for instrument, group in df.groupby(level="instrument"):
-            last_date = group.index[-1][1]  # element [1] = datetime from tuple
+            if group.empty:
+                continue
+            last_date = group.index[-1][1]
             row = group.iloc[-1]
             result[instrument] = (last_date, {c: row[c] for c in self.column_list[:-1]})
-        logger.info(f"Built old-latest map for {len(result)} symbols")
+        logger.info(f"Built old-latest map for {len(result)} symbols (queried {start_str}~{end_str})")
         return result
 
     def normalize(self, df):

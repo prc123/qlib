@@ -88,3 +88,29 @@ class DayOfYear(ElemOperator):
         series = self.feature.load(instrument, start_index, end_index, freq)
         values = np.array([_cal[i].timetuple().tm_yday for i in series.index], dtype=np.float64)
         return pd.Series(values, index=series.index)
+
+
+def _board_limit(instrument: str) -> float:
+    """Return price limit for a stock based on its code prefix.
+
+    - 主板 SH60/SZ00: 0.10
+    - 创业板 SZ30: 0.20
+    - 科创板 SH688: 0.20
+    - 北交所 BJ: 0.30
+    """
+    code = str(instrument).upper()
+    if code.startswith("BJ"):
+        return 0.30
+    if code.startswith("SH688") or code.startswith("SZ30"):
+        return 0.20
+    return 0.10
+
+
+class BoardLimit(ElemOperator):
+    """Board price limit: 0.10 (主板), 0.20 (创业板/科创板), 0.30 (北交所)."""
+
+    def _load_internal(self, instrument, start_index, end_index, freq):
+        series = self.feature.load(instrument, start_index, end_index, freq)
+        limit = _board_limit(instrument)
+        values = np.full(len(series), limit, dtype=np.float64)
+        return pd.Series(values, index=series.index)

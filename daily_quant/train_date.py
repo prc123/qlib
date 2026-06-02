@@ -164,15 +164,15 @@ def main():
 
     INSTRUMENTS = args.instruments
     STEP_LEN = args.step_len
-    TOTAL_FEAT = 170  # 158 (Alpha158) + 6 (fundamental) + 6 (date)
+    TOTAL_FEAT = 171  # 158 (Alpha158) + 6 (fundamental) + 7 (date+board)
 
     # --- Register date operators via qlib.init ---
-    from daily_quant.ops.date_ops import DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear
+    from daily_quant.ops.date_ops import DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit
 
     qlib.init(
         provider_uri=args.qlib_data_dir,
         region=REG_CN,
-        custom_ops=[DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear],
+        custom_ops=[DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit],
     )
     print(f"qlib initialized, data: {args.qlib_data_dir}")
 

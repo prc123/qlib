@@ -33,8 +33,8 @@ from qlib.utils import get_or_create_path
 from qlib.contrib.model.pytorch_gru_ts import GRU
 from qlib.data.dataset import TSDatasetH, TSDataSampler
 
-from daily_quant.ops.date_ops import DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear
-_CUSTOM_OPS = [DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear]
+from daily_quant.ops.date_ops import DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit
+_CUSTOM_OPS = [DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit]
 
 
 # --- 修复版归一化（与 notebook 中的 FixedNormalizedTSDataSampler 一致） ---
@@ -195,24 +195,21 @@ def refresh_instruments(qlib_dir: Path, instruments: str = None):
     all_df = pd.read_csv(all_path, sep="\t", header=None, names=["symbol", "start", "end"])
     all_max_end = all_df["end"].max()
 
-    # Nothing to do if instruments are already up-to-date
-    if str(all_max_end) >= last_cal_date:
-        return
-
     all_end_map = dict(zip(all_df["symbol"].astype(str), all_df["end"]))
 
-    # First, update all.txt itself
-    all_changed = 0
-    for idx, row in all_df.iterrows():
-        if str(row["end"]) == str(all_max_end):
-            all_df.at[idx, "end"] = last_cal_date
-            all_changed += 1
-    if all_changed:
-        all_df.to_csv(all_path, sep="\t", header=False, index=False)
-        print(f"[refresh] Updated {all_changed} stocks in all.txt")
-        # Refresh the end map after updating all.txt
-        all_end_map = dict(zip(all_df["symbol"].astype(str), all_df["end"]))
+    # Update all.txt if needed
+    if str(all_max_end) < last_cal_date:
+        all_changed = 0
+        for idx, row in all_df.iterrows():
+            if str(row["end"]) == str(all_max_end):
+                all_df.at[idx, "end"] = last_cal_date
+                all_changed += 1
+        if all_changed:
+            all_df.to_csv(all_path, sep="\t", header=False, index=False)
+            print(f"[refresh] Updated {all_changed} stocks in all.txt")
+            all_end_map = dict(zip(all_df["symbol"].astype(str), all_df["end"]))
 
+    # Always update other instrument files (they may lag behind all.txt)
     targets = [f"{instruments}.txt"] if instruments else None
     for f in sorted(instr_dir.glob("*.txt")):
         if f.name == "all.txt":
@@ -223,22 +220,22 @@ def refresh_instruments(qlib_dir: Path, instruments: str = None):
         changed = 0
         for idx, row in df.iterrows():
             sym = str(row["symbol"])
-            # Extend end date for stocks whose current end equals the (stale) max
-            if str(row["end"]) == str(all_max_end):
-                df.at[idx, "end"] = last_cal_date
-                changed += 1
-            elif sym in all_end_map and str(row["end"]) != str(all_end_map[sym]):
-                df.at[idx, "end"] = all_end_map[sym]
-                changed += 1
+            if str(row["end"]) != last_cal_date and sym in all_end_map:
+                if str(all_end_map[sym]) >= last_cal_date:
+                    df.at[idx, "end"] = last_cal_date
+                    changed += 1
+                elif str(row["end"]) != str(all_end_map[sym]):
+                    df.at[idx, "end"] = all_end_map[sym]
+                    changed += 1
         if changed:
             df.to_csv(f, sep="\t", header=False, index=False)
             print(f"[refresh] Updated {changed} stocks in {f.name}")
 
 
 def predict(
-    qlib_dir: str = r"C:\Users\pp\.qlib\qlib_data\cn_data_10y",
+    qlib_dir: str = r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd",
     model_recorder_id: str = None,
-    experiment_name: str = "GRU_mid_cap_60d",
+    experiment_name: str = "GRU_mid_cap_60d_fwd",
     output_csv: str = None,
     skip_update: bool = False,
     instruments: str = "mid_cap",
@@ -373,9 +370,9 @@ def predict(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Daily prediction pipeline")
-    parser.add_argument("--qlib_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_10y")
+    parser.add_argument("--qlib_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd")
     parser.add_argument("--model_id", default=None, help="Recorder ID, auto-detect if empty")
-    parser.add_argument("--experiment", default="GRU_mid_cap_60d", help="Experiment name")
+    parser.add_argument("--experiment", default="GRU_mid_cap_60d_fwd", help="Experiment name")
     parser.add_argument("--output", default=None, help="Output CSV path")
     parser.add_argument("--instruments", default="mid_cap", help="Stock pool: mid_cap, csi300, all, small_cap, etc.")
     parser.add_argument("--no-update", action="store_true", help="Skip data update")
