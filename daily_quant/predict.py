@@ -43,9 +43,13 @@ class FixedNormalizedTSDataSampler(TSDataSampler):
     def __getitem__(self, idx):
         data = super().__getitem__(idx)
         process_data = data[:, 0:-1]
-        data_mean = np.nanmean(process_data, axis=0)
-        data_std = np.nanstd(process_data, axis=0)
-        data_std = np.where(data_std < 1e-5, 1.0, data_std)
+        if process_data.shape[0] == 0:
+            return data
+        with np.errstate(all="ignore"):
+            data_mean = np.nanmean(process_data, axis=0)
+            data_std = np.nanstd(process_data, axis=0)
+        data_mean = np.where(np.isnan(data_mean), 0, data_mean)
+        data_std = np.where(np.isnan(data_std) | (data_std < 1e-5), 1.0, data_std)
         normalized = (process_data - data_mean) / data_std
         normalized = np.clip(normalized, -5, 5)
         normalized = np.where(np.isnan(normalized), 0, normalized)

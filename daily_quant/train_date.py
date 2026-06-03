@@ -1,5 +1,5 @@
 """
-Train GRU model with Alpha158Date handler (164 features: 158 Alpha158 + 6 date).
+Train GRU model with Alpha158Date handler (171 features: 158 Alpha158 + 6 fundamental + 7 date/board).
 
 Usage
 -----
@@ -42,9 +42,13 @@ class FixedNormalizedTSDataSampler(TSDataSampler):
     def __getitem__(self, idx):
         data = super().__getitem__(idx)
         process_data = data[:, 0:-1]
-        data_mean = np.nanmean(process_data, axis=0)
-        data_std = np.nanstd(process_data, axis=0)
-        data_std = np.where(data_std < 1e-5, 1.0, data_std)
+        if process_data.shape[0] == 0:
+            return data
+        with np.errstate(all="ignore"):
+            data_mean = np.nanmean(process_data, axis=0)
+            data_std = np.nanstd(process_data, axis=0)
+        data_mean = np.where(np.isnan(data_mean), 0, data_mean)
+        data_std = np.where(np.isnan(data_std) | (data_std < 1e-5), 1.0, data_std)
         normalized = (process_data - data_mean) / data_std
         normalized = np.clip(normalized, -5, 5)
         normalized = np.where(np.isnan(normalized), 0, normalized)
@@ -158,7 +162,7 @@ def main():
     parser.add_argument("--num_layers", type=int, default=2)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--qlib_data_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_10y")
+    parser.add_argument("--qlib_data_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd")
     parser.add_argument("--exp_name", default=None, help="Experiment name (default: GRU_{instruments}_{step_len}d)")
     args = parser.parse_args()
 

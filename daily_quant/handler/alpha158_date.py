@@ -15,7 +15,7 @@ BEFORE ``qlib.init()``.  See ``daily_quant.ops.date_ops``.
 from qlib.contrib.data.handler import Alpha158
 from qlib.contrib.data.loader import Alpha158DL
 
-DATE_FEATURE_COUNT = 6
+DATE_FEATURE_COUNT = 7
 FUND_FEATURE_COUNT = 6
 
 _DATE_FIELDS = [
@@ -25,6 +25,7 @@ _DATE_FIELDS = [
     "DayOfMonth($close)",
     "WeekOfYear($close)",
     "DayOfYear($close)",
+    "BoardLimit($close)",
 ]
 
 _DATE_NAMES = [
@@ -34,6 +35,7 @@ _DATE_NAMES = [
     "DAYMONTH",
     "WEEKYEAR",
     "DAYYEAR",
+    "BOARDLIMIT",
 ]
 
 _FUND_FIELDS = [
