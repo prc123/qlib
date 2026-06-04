@@ -166,6 +166,12 @@ def update_data(qlib_dir: str):
         raise FileNotFoundError(f"Update script not found: {update_script}")
 
     import subprocess
+    import os
+    # Clear proxy env vars so Tushare API calls go directly (not through
+    # a non-running proxy like 127.0.0.1:7897).
+    env = os.environ.copy()
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
+        env.pop(k, None)
     python = sys.executable
     cmd = [
         python, str(update_script),
@@ -173,7 +179,7 @@ def update_data(qlib_dir: str):
         "--delay", "0.3",
     ]
     print(f"[update] Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=str(update_script.parent))
+    result = subprocess.run(cmd, cwd=str(update_script.parent), env=env)
     if result.returncode != 0:
         raise RuntimeError(f"Data update failed with code {result.returncode}")
     print("[update] Data update completed.")
@@ -376,7 +382,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Daily prediction pipeline")
     parser.add_argument("--qlib_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd")
     parser.add_argument("--model_id", default=None, help="Recorder ID, auto-detect if empty")
-    parser.add_argument("--experiment", default="GRU_mid_cap_60d_fwd", help="Experiment name")
+    parser.add_argument("--experiment", default="GRU_mid_cap_60d", help="Experiment name")
     parser.add_argument("--output", default=None, help="Output CSV path")
     parser.add_argument("--instruments", default="mid_cap", help="Stock pool: mid_cap, csi300, all, small_cap, etc.")
     parser.add_argument("--no-update", action="store_true", help="Skip data update")
