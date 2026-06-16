@@ -1,6 +1,8 @@
 """
 每日收盘后一键执行：更新数据 → 预测 → 生成交易信号。
 
+输出同时显示在终端和写入日志文件 ``daily_run.log``。
+
 Usage
 -----
     $ python daily_quant/daily_run.py
@@ -14,6 +16,7 @@ Windows Task Scheduler
 
 import os
 import sys
+import io
 import subprocess
 from pathlib import Path
 from datetime import datetime
@@ -21,24 +24,53 @@ from datetime import datetime
 ROOT = Path(__file__).resolve().parent.parent
 CUR_DIR = Path(__file__).resolve().parent
 
+LOG_FILE = CUR_DIR / "daily_run.log"
+PROXY_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+              "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")
+
 
 def _clean_env():
     """Copy environ without proxy vars (avoid dead 127.0.0.1:7897 timeout)."""
     env = os.environ.copy()
-    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
-              "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
+    for k in PROXY_KEYS:
         env.pop(k, None)
     return env
 
 
+class Tee:
+    """Write to both console and log file."""
+    def __init__(self, log_path: Path):
+        self.file = open(str(log_path), "a", encoding="utf-8", buffering=1)
+        self.stdout = sys.stdout
+
+    def write(self, s):
+        self.stdout.write(s)
+        self.file.write(s)
+
+    def flush(self):
+        self.stdout.flush()
+        self.file.flush()
+
+    def close(self):
+        self.file.close()
+
+
+def log(msg: str = ""):
+    print(msg)
+
+
 def _run(python: str, script: Path, cwd: Path, args: list[str] = None):
     cmd = [python, str(script)] + (args or [])
-    print(f"[run] {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=str(cwd), env=_clean_env())
+    log(f"[run] {' '.join(cmd)}")
+    result = subprocess.run(
+        cmd, cwd=str(cwd), env=_clean_env(),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    log(result.stdout)
     if result.returncode != 0:
-        print(f"[FAIL] {script.name} returned {result.returncode}")
+        log(f"[FAIL] {script.name} returned {result.returncode}")
         sys.exit(result.returncode)
-    print()
 
 
 def main():
@@ -46,34 +78,42 @@ def main():
     qlib_dir = r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd"
     tushare_dir = ROOT / "scripts" / "data_collector" / "tushare"
 
-    print(f"{'='*60}")
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 每日任务开始")
+    tee = Tee(LOG_FILE)
+    sys.stdout = tee
 
-    # Step 1: 更新数据 (前复权版)
-    print(f"\n{'='*60}")
-    print("Step 1/3: 更新 qlib 数据 (Tushare → qlib binary)")
-    _run(python,
-         tushare_dir / "daily_update_fwd.py",
-         cwd=tushare_dir,
-         args=["--qlib_data_1d_dir", qlib_dir, "--delay", "0.3"])
+    try:
+        log(f"{'='*60}")
+        log(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 每日任务开始")
+        log()
 
-    # Step 2: 预测
-    print(f"{'='*60}")
-    print("Step 2/3: 生成预测分数")
-    _run(python,
-         CUR_DIR / "predict.py",
-         cwd=ROOT,
-         args=["--qlib_dir", qlib_dir, "--no-update"])
+        # Step 1: 更新数据 (前复权版)
+        log(f"{'='*60}")
+        log("Step 1/3: 更新 qlib 数据 (Tushare → qlib binary)")
+        _run(python,
+             tushare_dir / "daily_update_fwd.py",
+             cwd=tushare_dir,
+             args=["--qlib_data_1d_dir", qlib_dir, "--delay", "0.3"])
 
-    # Step 3: 交易信号
-    print(f"{'='*60}")
-    print("Step 3/3: 生成交易信号")
-    _run(python,
-         CUR_DIR / "trade_signals.py",
-         cwd=CUR_DIR)
+        # # Step 2: 预测
+        # log(f"{'='*60}")
+        # log("Step 2/3: 生成预测分数")
+        # _run(python,
+        #      CUR_DIR / "predict.py",
+        #      cwd=ROOT,
+        #      args=["--qlib_dir", qlib_dir, "--no-update"])
 
-    print(f"{'='*60}")
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 每日任务完成")
+        # # Step 3: 交易信号
+        # log(f"{'='*60}")
+        # log("Step 3/3: 生成交易信号")
+        # _run(python,
+        #      CUR_DIR / "trade_signals.py",
+        #      cwd=CUR_DIR)
+
+        # log(f"{'='*60}")
+        # log(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 每日任务完成")
+    finally:
+        sys.stdout = tee.stdout
+        tee.close()
 
 
 if __name__ == "__main__":

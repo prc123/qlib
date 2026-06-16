@@ -439,14 +439,22 @@ class TushareNormalizeCN1dExtend(TushareNormalizeCN1d):
         return result
 
     def normalize(self, df):
+        # Trim to new rows BEFORE normalizing, so we don't process full history
+        # on every daily update.
+        symbol_name = str(df[self._symbol_field_name].iloc[0]).upper()
+        entry = self._old_latest.get(symbol_name)
+        if entry is not None:
+            latest_date, _ = entry
+            df[self._date_field_name] = pd.to_datetime(df[self._date_field_name])
+            df = df[df[self._date_field_name] >= pd.Timestamp(latest_date)]
+            if df.empty:
+                return None
+        # Normalize only the trimmed (new) rows
         df = super().normalize(df)
         df.set_index(self._date_field_name, inplace=True)
-        symbol_name = df[self._symbol_field_name].iloc[0]
-        entry = self._old_latest.get(str(symbol_name).upper())
         if entry is None:
             return df.reset_index()
         latest_date, old_latest_data = entry
-        df = df.loc[latest_date:]
         new_latest_data = df.iloc[0]
         for col in self.column_list[:-1]:
             if col == "volume":

@@ -501,7 +501,9 @@ class DumpDataUpdate(DumpDataBase):
     def _dump_features(self):
         logger.info("start dump features......")
         error_code = {}
-        with ProcessPoolExecutor(max_workers=self.works) as executor:
+        # Use ThreadPoolExecutor: dump is I/O-bound, threads avoid Windows
+        # process-spawn overhead and DataFrame serialization cost.
+        with ThreadPoolExecutor(max_workers=self.works) as executor:
             futures = {}
             for _code, _df in self._all_data.groupby(self.symbol_field_name, group_keys=False):
                 _code = fname_to_code(str(_code).lower()).upper()

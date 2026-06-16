@@ -3,10 +3,12 @@
 
 从 daily_quant/ 目录中自动发现所有 pred_score_*.csv，按日期排序后逐一处理。
 通过 Tushare 获取股票名称。
+在生成信号前自动运行 RiskMonitor 检查策略健康度。
 
 Usage
 -----
     $ python daily_quant/trade_signals.py
+    $ python daily_quant/trade_signals.py --skip-risk   # 跳过风控检查
 
 Output
 ------
@@ -15,13 +17,19 @@ Output
 
 import os
 import re
+import sys
 import pandas as pd
+import numpy as np
 from pathlib import Path
 
 CUR_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(CUR_DIR.parent))
+
+from daily_quant.risk_monitor import PredictionRiskMonitor
 
 TOPK = 10       # 持仓数量
 N_DROP = 5      # 每日淘汰最差 N 只
+RISK_CHECK = True  # 默认开启风控
 
 TUSHARE_TOKEN = "a2d2e11f92720e2a69fb021f4fa098a8a8e56c4800d0040b72306202"
 
@@ -65,12 +73,50 @@ def load_scores(path: Path) -> pd.Series:
     return df["score"]
 
 
-def run():
+def build_risk_from_predictions(pred_files: dict) -> tuple:
+    """Build PredictionRiskMonitor from pred_score files, return (mon, risk_map)."""
+    mon = PredictionRiskMonitor(pred_files)
+    return mon, mon.risk_map()
+
+
+def lookup_risk(risk_map: dict, pred_date: str) -> tuple:
+    """Get risk for *pred_date*, forward-filling from nearest earlier date."""
+    if pred_date in risk_map:
+        return risk_map[pred_date]
+    earlier = [d for d in risk_map if d <= pred_date]
+    if earlier:
+        return risk_map[max(earlier)]
+    return ("?", 0)
+
+
+def run(skip_risk: bool = False):
+    # ---- Load predictions ----
     pred_files = discover_pred_files()
     if len(pred_files) < 1:
         print("未找到 pred_score_*.csv 文件")
         return
     print(f"发现 {len(pred_files)} 个预测文件: {', '.join(sorted(pred_files.keys()))}")
+
+    # ---- Load risk from prediction scores (no backtest report needed) ----
+    risk_map: dict[str, tuple] = {}
+    if not skip_risk:
+        try:
+            mon, risk_map = build_risk_from_predictions(pred_files)
+            print("\n=== 风控检查 (PredictionRiskMonitor) ===")
+            print(mon.status(model_train_end="2024-12-31"))
+            hist = mon.history()
+            last = hist.iloc[-1]
+            if last["level"] == "RED":
+                print(f"\n  *** 风控等级 RED ({int(last['warnings'])} 预警) — 暂停交易 ***")
+                sys.exit(1)
+            elif last["level"] == "YELLOW":
+                print(f"  *** 风控等级 YELLOW — 建议减仓，继续执行但请谨慎 ***\n")
+            else:
+                print(f"  风控等级 GREEN — 正常交易\n")
+        except Exception as e:
+            print(f"  [WARN] 风险计算失败: {e}，继续无风控信号\n")
+    else:
+        print("=== 风控检查: 已跳过 ===\n")
 
     # 收集所有出现过的 instrument，查询名称
     all_instruments: set[str] = set()
@@ -88,6 +134,9 @@ def run():
 
     for pred_date, trade_date in zip(dates, dates[1:] + [None]):
         scores = load_scores(pred_files[pred_date]).sort_values(ascending=False)
+
+        # Risk for this prediction date (forward-fill if beyond report)
+        rlevel, rwarn = lookup_risk(risk_map, pred_date)
 
         if not holdings:
             buy_list = list(scores.index[:TOPK])
@@ -108,35 +157,20 @@ def run():
 
         next_trade_date = trade_date or (pd.Timestamp(pred_date) + pd.DateOffset(days=1)).strftime("%Y-%m-%d")
 
+        base = {"date": pred_date, "trade_date": next_trade_date,
+                "risk_level": rlevel, "risk_warnings": rwarn}
+
         for sym in buy_list:
-            records.append({
-                "date": pred_date,
-                "trade_date": next_trade_date,
-                "action": "BUY",
-                "instrument": sym,
-                "name": name_map.get(sym, ""),
-                "score": round(float(scores[sym]), 6),
-            })
+            records.append({**base, "action": "BUY", "instrument": sym,
+                            "name": name_map.get(sym, ""), "score": round(float(scores[sym]), 6)})
 
         for sym in sell_list:
-            records.append({
-                "date": pred_date,
-                "trade_date": next_trade_date,
-                "action": "SELL",
-                "instrument": sym,
-                "name": name_map.get(sym, ""),
-                "score": round(float(scores[sym]), 6),
-            })
+            records.append({**base, "action": "SELL", "instrument": sym,
+                            "name": name_map.get(sym, ""), "score": round(float(scores[sym]), 6)})
 
         for sym in sorted(holdings - set(buy_list)):
-            records.append({
-                "date": pred_date,
-                "trade_date": next_trade_date,
-                "action": "HOLD",
-                "instrument": sym,
-                "name": name_map.get(sym, ""),
-                "score": round(float(scores[sym]), 6),
-            })
+            records.append({**base, "action": "HOLD", "instrument": sym,
+                            "name": name_map.get(sym, ""), "score": round(float(scores[sym]), 6)})
 
     result = pd.DataFrame(records)
     out_path = CUR_DIR / "trade_signals.csv"
@@ -148,8 +182,10 @@ def run():
         buys = sub[sub["action"] == "BUY"]
         sells = sub[sub["action"] == "SELL"]
         holds = sub[sub["action"] == "HOLD"]
+        rlevel = sub.iloc[0]["risk_level"]
+        rwarn = sub.iloc[0]["risk_warnings"]
         next_td = sub.iloc[0]["trade_date"]
-        print(f"\n=== {date_key} 预测 → {next_td} 交易 ===")
+        print(f"\n=== {date_key} 预测 → {next_td} 交易 | 风控: {rlevel}({rwarn}/8) ===")
         if len(sells):
             items = [f"{r['instrument']}({r['name']})" for _, r in sells.iterrows()]
             print(f"  卖出 ({len(sells)}): {', '.join(items)}")
@@ -165,4 +201,8 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate trade signals with risk check")
+    parser.add_argument("--skip-risk", action="store_true", help="Skip RiskMonitor check")
+    args = parser.parse_args()
+    run(skip_risk=args.skip_risk)

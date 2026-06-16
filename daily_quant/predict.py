@@ -242,6 +242,139 @@ def refresh_instruments(qlib_dir: Path, instruments: str = None):
             print(f"[refresh] Updated {changed} stocks in {f.name}")
 
 
+# --- 风险评估（结合预测分数 + qlib 股价数据） ---
+
+def assess_risk(pred_df, instruments, pred_date_str, qlib_path, model_id, exp_name):
+    """Compute risk signals from predictions + market data."""
+    from qlib.data import D
+
+    scores = pred_df.droplevel("datetime") if "datetime" in pred_df.index.names else pred_df
+    if isinstance(scores, pd.DataFrame):
+        scores = scores.iloc[:, -1]
+
+    risk = {"date": pred_date_str, "n_stocks": len(scores)}
+
+    # ---- Prediction-based signals ----
+    risk["score_mean"] = float(scores.mean())
+    risk["score_std"] = float(scores.std())
+    risk["score_min"] = float(scores.min())
+    risk["score_max"] = float(scores.max())
+    risk["neg_ratio"] = float((scores < 0).mean())
+    top30 = scores.nlargest(30)
+    risk["top30_mean"] = float(top30.mean())
+
+    # ---- Market-based signals (from qlib data) ----
+    try:
+        inst_list = D.instruments(instruments)
+        # Recent N days of market data
+        end_dt = pd.Timestamp(pred_date_str)
+        start_dt = end_dt - pd.DateOffset(days=120)
+        fields = ["$close", "$volume", "$change"]
+        mkt = D.features(inst_list, fields,
+                         start_time=start_dt.strftime("%Y-%m-%d"),
+                         end_time=end_dt.strftime("%Y-%m-%d"))
+    except Exception:
+        mkt = None
+
+    if mkt is not None and len(mkt) > 0:
+        # Last 20 trading days
+        all_dates = sorted(mkt.index.get_level_values("datetime").unique())
+        recent = all_dates[-20:] if len(all_dates) >= 20 else all_dates
+
+        # Today only
+        today_mask = mkt.index.get_level_values("datetime") == pd.Timestamp(pred_date_str)
+        today_data = mkt[today_mask] if today_mask.any() else mkt.loc[mkt.index.get_level_values("datetime") == all_dates[-1]]
+
+        # Market breadth: % stocks with positive change today
+        if "$change" in today_data.columns:
+            chg = today_data["$change"].dropna()
+            risk["breadth"] = float((chg > 0).mean()) if len(chg) > 0 else None
+        else:
+            risk["breadth"] = None
+
+        # Cross-sectional volatility
+        if "$change" in today_data.columns:
+            risk["cross_vol"] = float(today_data["$change"].dropna().std()) if len(chg) > 0 else None
+        else:
+            risk["cross_vol"] = None
+
+        # Volume trend: avg volume over last 5 days vs last 20 days
+        if "$volume" in mkt.columns:
+            vol_by_day = mkt["$volume"].groupby("datetime").mean()
+            vol_recent = vol_by_day.iloc[-5:]
+            vol_base = vol_by_day.iloc[-20:]
+            if len(vol_base) >= 10:
+                risk["vol_ratio"] = float(vol_recent.mean() / vol_base.mean())
+            else:
+                risk["vol_ratio"] = None
+        else:
+            risk["vol_ratio"] = None
+
+        # Market trend: 5-day vs 20-day average change
+        if "$change" in mkt.columns:
+            ret_by_day = mkt["$change"].groupby("datetime").mean()
+            risk["mkt_ret_5d"] = float(ret_by_day.iloc[-5:].mean()) if len(ret_by_day) >= 5 else None
+            risk["mkt_ret_20d"] = float(ret_by_day.iloc[-20:].mean()) if len(ret_by_day) >= 20 else None
+        else:
+            risk["mkt_ret_5d"] = None
+            risk["mkt_ret_20d"] = None
+
+    # ---- Model staleness ----
+    try:
+        rec = R.get_recorder(recorder_id=model_id, experiment_name=exp_name)
+        train_end = rec.info.get("end_time")
+        if train_end:
+            risk["model_age_days"] = (pd.Timestamp.now() - pd.Timestamp(train_end)).days
+    except Exception:
+        risk["model_age_days"] = None
+
+    # ---- Data freshness ----
+    cal_path = Path(qlib_path) / "calendars" / "day.txt"
+    if cal_path.exists():
+        cal = pd.read_csv(cal_path)
+        last_cal = pd.Timestamp(cal.iloc[-1, 0])
+        bdays = pd.bdate_range(last_cal, pd.Timestamp.now().normalize(), inclusive="right")
+        risk["data_age_days"] = len(bdays)
+    else:
+        risk["data_age_days"] = None
+
+    # ---- Decision ----
+    warnings = 0
+    if risk["score_std"] is not None and risk["score_std"] < 0.2:
+        warnings += 1
+    if risk["neg_ratio"] is not None and risk["neg_ratio"] > 0.70:
+        warnings += 1
+    if risk["top30_mean"] is not None and risk["top30_mean"] < 0.5:
+        warnings += 1
+    if risk.get("breadth") is not None and risk["breadth"] < 0.30:
+        warnings += 1
+    if risk.get("cross_vol") is not None and risk["cross_vol"] > 0.05:
+        warnings += 1
+    if risk.get("model_age_days") is not None and risk["model_age_days"] > 180:
+        warnings += 1
+    if risk.get("data_age_days") is not None and risk["data_age_days"] > 2:
+        warnings += 1
+    risk["warnings"] = warnings
+    risk["level"] = "RED" if warnings >= 5 else ("YELLOW" if warnings >= 3 else "GREEN")
+
+    return risk
+
+
+def print_risk_report(risk):
+    """Print risk assessment results."""
+    lvl = risk["level"]
+    print(f"\n{'='*60}")
+    print(f"  Risk Assessment @ {risk['date']}  Level: {lvl}  ({risk['warnings']} warnings)")
+    print(f"{'='*60}")
+    print(f"  {'Prediction':<22} {'Market':<22}")
+    print(f"  {'  score_mean':<22} {risk['score_mean']:>8.4f}  {'breadth':<22} {risk.get('breadth') or 'N/A':>8}")
+    print(f"  {'  score_std':<22} {risk['score_std']:>8.4f}  {'cross_vol':<22} {risk.get('cross_vol') or 'N/A':>8}")
+    print(f"  {'  neg_ratio':<22} {risk['neg_ratio']:>8.1%}  {'mkt_ret_5d':<22} {risk.get('mkt_ret_5d') or 'N/A':>8}")
+    print(f"  {'  top30_mean':<22} {risk['top30_mean']:>8.4f}  {'vol_ratio':<22} {risk.get('vol_ratio') or 'N/A':>8}")
+    print(f"  {'  model_age':<22} {str(risk.get('model_age_days'))+'d' if risk.get('model_age_days') else 'N/A':>8}  {'data_age':<22} {str(risk.get('data_age_days'))+'d' if risk.get('data_age_days') else 'N/A':>8}")
+    print(f"  Decision: {'GO' if lvl == 'GREEN' else ('CAUTION' if lvl == 'YELLOW' else 'NO-GO')}")
+
+
 def predict(
     qlib_dir: str = r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd",
     model_recorder_id: str = None,
@@ -352,7 +485,11 @@ def predict(
     pred_df = pred_all.loc[pred_all.index.get_level_values("datetime") == pd.Timestamp(pred_date_str)]
     print(f"[predict] Generated {len(pred_df)} predictions for {pred_date_str}")
 
-    # -------- Step 5: Show predictions --------
+    # -------- Step 5: Risk assessment (combine predictions + market data) --------
+    risk = assess_risk(pred_df, instruments, pred_date_str, qlib_path, model_recorder_id, experiment_name)
+    print_risk_report(risk)
+
+    # -------- Step 6: Show predictions --------
     print(f"\n========== Predictions (signal for: {next_trading_day_str}) ==========")
     pred_sorted = pred_df.sort_values(ascending=False)
     print(f"\nTop 20 (buy):")
@@ -360,17 +497,24 @@ def predict(
     print(f"\nBottom 5 (avoid):")
     print(pred_sorted.tail(5).to_string())
     
-    # -------- Step 6: Save --------
+    # -------- Step 7: Save --------
     if output_csv is None:
         output_csv = f"pred_score_{next_trading_day_str}.csv"
 
-    # 输出格式：instrument, score（两列，无 MultiIndex）
+    # 输出格式：instrument, score, risk_level（含风控标签）
     pred_out = pred_df.reset_index()
     pred_out.columns = ["date", "instrument", "score"]
     pred_out = pred_out.drop(columns=["date"])
     pred_out = pred_out.sort_values("score", ascending=False)
+    pred_out["risk_level"] = risk["level"]
+    pred_out["risk_warnings"] = risk["warnings"]
     pred_out.to_csv(output_csv, index=False)
     print(f"\n[predict] Full predictions ({len(pred_out)} stocks) saved to {output_csv}")
+
+    # Risk report (summary)
+    risk_csv = output_csv.replace(".csv", "_risk.csv")
+    pd.DataFrame([risk]).to_csv(risk_csv, index=False)
+    print(f"[predict] Risk report saved to {risk_csv}")
 
     # Top 50 精选
     top50_csv = output_csv.replace(".csv", "_top50.csv")

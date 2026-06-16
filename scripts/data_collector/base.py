@@ -312,7 +312,11 @@ class Normalize:
     def normalize(self):
         logger.info("normalize data......")
 
-        with ProcessPoolExecutor(max_workers=self._max_workers) as worker:
+        # ThreadPoolExecutor: normalize is I/O-bound (read CSV, write CSV) plus
+        # simple arithmetic (column scaling).  Threads avoid Windows process-spawn
+        # overhead and DataFrame serialization cost.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=self._max_workers) as worker:
             file_list = list(self._source_dir.glob("*.csv"))
             with tqdm(total=len(file_list)) as p_bar:
                 for _ in worker.map(self._executor, file_list):
