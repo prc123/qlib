@@ -52,3 +52,24 @@ tags
 .idea/
 .aider*
 .qlib
+
+# ============ daily_quant / tushare generated noise ============
+
+# Claude Code session config
+.claude/
+
+# CatBoost training artifacts (auto-created in CWD)
+catboost_info/
+daily_quant/catboost_info/
+
+# Logs
+*.log
+
+# Generated backtest report artifacts (PNG/TXT)
+daily_quant/xgboost/reports/
+
+# Stray date-stamped files from failed .bat date expansion (e.g. `2026-08-13`)
+scripts/data_collector/tushare/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]
+
+# Tushare download progress marker
+scripts/data_collector/tushare/alpha_download_progress.txt
