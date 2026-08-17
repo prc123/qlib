@@ -1,0 +1,48 @@
+{
+  "recorder_id": "2618ef9bf6054b1c95112141b31f5d1d",
+  "experiment": "GRU_mid_cap_60d",
+  "status": "FINISHED",
+  "start_time": "2026-06-23 23:32:11",
+  "end_time": "2026-06-24 03:50:59",
+  "tags": {},
+  "metrics": {
+    "train_score": -0.7786331103662211,
+    "valid_score": -0.9910311424454977
+  },
+  "params": {
+    "cmd-sys.argv": "e:/kaggle_code/qlib/daily_quant/train_date.py",
+    "dataset.class": "FixedNormalizedTSDatasetH",
+    "dataset.kwargs.handler.class": "Alpha158Date",
+    "dataset.kwargs.handler.kwargs.end_time": "2026-05-28",
+    "dataset.kwargs.handler.kwargs.fit_end_time": "2024-12-31",
+    "dataset.kwargs.handler.kwargs.fit_start_time": "2022-01-01",
+    "dataset.kwargs.handler.kwargs.instruments": "mid_cap",
+    "dataset.kwargs.handler.kwargs.start_time": "2022-01-01",
+    "dataset.kwargs.handler.module_path": "daily_quant.handler.alpha158_date",
+    "dataset.kwargs.segments.test": "('2025-01-01', '2026-05-27')",
+    "dataset.kwargs.segments.train": "('2022-01-01', '2024-12-31')",
+    "dataset.kwargs.segments.valid": "('2025-01-01', '2025-06-30')",
+    "dataset.kwargs.step_len": "60",
+    "model.class": "GRUWithProgress",
+    "model.kwargs.batch_size": "512",
+    "model.kwargs.dropout": "0.1",
+    "model.kwargs.d_feat": "171",
+    "model.kwargs.early_stop": "10",
+    "model.kwargs.GPU": "0",
+    "model.kwargs.hidden_size": "64",
+    "model.kwargs.loss": "mse",
+    "model.kwargs.lr": "0.001",
+    "model.kwargs.num_layers": "2",
+    "model.kwargs.n_epochs": "100",
+    "model.kwargs.n_jobs": "0",
+    "model.kwargs.optimizer": "adam",
+    "model.kwargs.seed": "42"
+  },
+  "artifacts": [
+    "code_cached.txt",
+    "code_diff.txt",
+    "code_status.txt",
+    "trained_model"
+  ],
+  "exported_at": "2026-06-29 21:52:33"
+}

@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-QLIB_DIR = Path(r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd")
+QLIB_DIR = Path(r"C:\Users\pp\.qlib\qlib_data\cn_data_bwd")
 
 # ---- Step 1: Fetch industry mapping from Tushare ----
 for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):

@@ -7,7 +7,7 @@ Daily prediction pipeline:
 Usage
 -----
     python predict.py
-    python predict.py --no-update      # skip data update, predict only
+    python predict.py --update         # update data first, then predict
     python predict.py --model_id f6a7bc45e25b481ca295eee21322d259
 """
 
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import copy
 
 # 确保项目根目录在 sys.path 中（从任意目录运行 predict.py 都能 import daily_quant）
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import numpy as np
 import pandas as pd
@@ -31,52 +31,10 @@ from qlib.data.dataset.handler import DataHandlerLP
 from qlib.model.utils import ConcatDataset
 from qlib.utils import get_or_create_path
 from qlib.contrib.model.pytorch_gru_ts import GRU
-from qlib.data.dataset import TSDatasetH, TSDataSampler
+from qlib.data.dataset import TSDatasetH
 
 from daily_quant.ops.date_ops import DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit
 _CUSTOM_OPS = [DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit]
-
-
-# --- 修复版归一化（与 notebook 中的 FixedNormalizedTSDataSampler 一致） ---
-class FixedNormalizedTSDataSampler(TSDataSampler):
-    """用 nanmean/nanstd，防止单列 NaN 传染整行"""
-    def __getitem__(self, idx):
-        data = super().__getitem__(idx)
-        process_data = data[:, 0:-1]
-        if process_data.shape[0] == 0:
-            return data
-        with np.errstate(all="ignore"):
-            data_mean = np.nanmean(process_data, axis=0)
-            data_std = np.nanstd(process_data, axis=0)
-        data_mean = np.where(np.isnan(data_mean), 0, data_mean)
-        data_std = np.where(np.isnan(data_std) | (data_std < 1e-5), 1.0, data_std)
-        normalized = (process_data - data_mean) / data_std
-        normalized = np.clip(normalized, -5, 5)
-        normalized = np.where(np.isnan(normalized), 0, normalized)
-        data[:, 0:-1] = normalized
-        return data
-
-
-class FixedNormalizedTSDatasetH(TSDatasetH):
-    """使用 FixedNormalizedTSDataSampler 的数据集"""
-    def _prepare_seg(self, slc, **kwargs):
-        dtype = kwargs.pop("dtype", None)
-        if not isinstance(slc, slice):
-            slc = slice(*slc)
-        flt_col = kwargs.pop("flt_col", None) or self.flt_col
-        ext_slice = self._extend_slice(slc, self.cal, self.step_len)
-        data = super(TSDatasetH, self)._prepare_seg(ext_slice, **kwargs)
-        flt_kwargs = copy.deepcopy(kwargs)
-        if flt_col is not None:
-            flt_kwargs["col_set"] = flt_col
-            flt_data = super(TSDatasetH, self)._prepare_seg(ext_slice, **flt_kwargs)
-            assert len(flt_data.columns) == 1
-        else:
-            flt_data = None
-        return FixedNormalizedTSDataSampler(
-            data=data, start=slc.start, end=slc.stop,
-            step_len=self.step_len, dtype=dtype, flt_data=flt_data,
-        )
 
 
 # --- 自定义模型类（与 notebook 中的 GRUWithProgress 完全一致，保证 pickle 能反序列化） ---
@@ -376,12 +334,12 @@ def print_risk_report(risk):
 
 
 def predict(
-    qlib_dir: str = r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd",
+    qlib_dir: str = r"C:\Users\pp\.qlib\qlib_data\cn_data_bwd",
     model_recorder_id: str = None,
-    experiment_name: str = "GRU_mid_cap_60d_fwd",
+    experiment_name: str = "GRU_mid_cap_60d",
     output_csv: str = None,
     skip_update: bool = False,
-    instruments: str = "mid_cap",
+    instruments: str = "mid_cap_filtered",
 ):
     """Main prediction pipeline.
 
@@ -411,7 +369,7 @@ def predict(
             print("[check] Data is stale, updating...")
             update_data(str(qlib_path))
     else:
-        print("[check] Skipping data update (--no-update).")
+        print("[check] Skipping data update (use --update to enable).")
 
     # Sync instrument files so end dates cover the latest trading day
     refresh_instruments(qlib_path, instruments)
@@ -445,38 +403,67 @@ def predict(
     if tags:
         print(f"[model] Tags: {tags}")
 
-    # -------- Step 3: Predict for the last calendar date (signals for next trading day) --------
-    last_cal_date = get_latest_calendar_date(qlib_path)
-    pred_date_str = last_cal_date.strftime("%Y-%m-%d")
-    # Next trading day = where these signals apply
-    next_bdays = pd.bdate_range(last_cal_date, last_cal_date + pd.DateOffset(days=7), inclusive="right")
-    next_trading_day_str = next_bdays[0].strftime("%Y-%m-%d") if len(next_bdays) > 0 else (last_cal_date + pd.DateOffset(days=1)).strftime("%Y-%m-%d")
+    # -------- Step 3: Predict for the specified or latest calendar date --------
+    cal = pd.read_csv(qlib_path / "calendars" / "day.txt", header=None, names=["date"])
+    cal_dates = cal["date"].tolist()
+
+    if args.pred_date:
+        pred_date_str = args.pred_date
+        try:
+            idx = cal_dates.index(pred_date_str)
+            next_trading_day_str = cal_dates[idx + 1] if idx + 1 < len(cal_dates) else pred_date_str
+        except ValueError:
+            print(f"[predict] WARNING: {pred_date_str} not in calendar, using as-is")
+            next_trading_day_str = pred_date_str
+            idx = len(cal_dates) - 1
+    else:
+        last_cal_date = get_latest_calendar_date(qlib_path)
+        pred_date_str = last_cal_date.strftime("%Y-%m-%d")
+        idx = cal_dates.index(pred_date_str)
+        next_bdays = pd.bdate_range(last_cal_date, last_cal_date + pd.DateOffset(days=7), inclusive="right")
+        next_trading_day_str = next_bdays[0].strftime("%Y-%m-%d") if len(next_bdays) > 0 else (last_cal_date + pd.DateOffset(days=1)).strftime("%Y-%m-%d")
+
+    # Segment start: go back 240 trading days (~1 year) to ensure batch distribution
+    # matches training/backtest conditions and avoids cuDNN batch-dependent variance
+    test_start_idx = max(0, idx - 240)
+    test_start_str = cal_dates[test_start_idx]
     print(f"[predict] Predicting for: {pred_date_str} → signals apply to: {next_trading_day_str}")
 
     # -------- Step 4: Build dataset --------
-    # start_time 只需 step_len + 缓冲天数之前的日期，不需要从 2022 开始
-    pred_date_dt = pd.Timestamp(pred_date_str)
-    # 往前推 step_len + 120 个自然日（足够覆盖 60 个交易日）
-    start_dt = pred_date_dt - pd.DateOffset(days=180)
-    start_str = start_dt.strftime("%Y-%m-%d")
-
     data_handler_config = {
-        "start_time": start_str,
+        "start_time": "2016-01-01",
         "end_time": pred_date_str,
-        "fit_start_time": start_str,
-        "fit_end_time": pred_date_str,
+        "fit_start_time": "2016-01-01",
+        "fit_end_time": "2024-12-31",
         "instruments": instruments,
+        "infer_processors": [
+            {"class": "FilterCol", "kwargs": {
+                "fields_group": "feature",
+                "col_list": [
+                    "RESI5", "WVMA5", "RSQR5", "KLEN", "RSQR10", "CORR5", "CORD5", "CORR10",
+                    "ROC60", "RESI10", "VSTD5", "RSQR60", "CORR60", "WVMA60", "STD5",
+                    "RSQR20", "CORD60", "CORD10", "CORR20", "KLOW",
+                ],
+            }},
+            {"class": "RobustZScoreNorm", "kwargs": {
+                "fields_group": "feature",
+                "clip_outlier": True,
+            }},
+            {"class": "Fillna", "kwargs": {"fields_group": "feature"}},
+        ],
     }
 
     # TSDatasetH segment end is exclusive, so use next_trading_day as end
     # to ensure pred_date_str is included in the predictions
-    predict_dataset = FixedNormalizedTSDatasetH(
+    # segment start: dynamic ~240 trading days back for consistent batch distribution
+    predict_dataset = TSDatasetH(
         handler={
             "class": "Alpha158Date",
             "module_path": "daily_quant.handler.alpha158_date",
             "kwargs": data_handler_config,
         },
-        segments={"test": (start_str, next_trading_day_str)},
+        segments={"test": ("2026-05-01", next_trading_day_str)},
+        #segments={"test": (test_start_str, next_trading_day_str)},
         step_len=60,
     )
 
@@ -497,9 +484,14 @@ def predict(
     print(f"\nBottom 5 (avoid):")
     print(pred_sorted.tail(5).to_string())
     
-    # -------- Step 7: Save --------
+    # -------- Step 7: Save (organized by prediction date) --------
+    out_dir = Path.cwd() / "predictions" / pred_date_str
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     if output_csv is None:
-        output_csv = f"pred_score_{next_trading_day_str}.csv"
+        output_csv = out_dir / f"pred_score_{next_trading_day_str}.csv"
+    else:
+        output_csv = Path(output_csv)
 
     # 输出格式：instrument, score, risk_level（含风控标签）
     pred_out = pred_df.reset_index()
@@ -512,24 +504,25 @@ def predict(
     print(f"\n[predict] Full predictions ({len(pred_out)} stocks) saved to {output_csv}")
 
     # Risk report (summary)
-    risk_csv = output_csv.replace(".csv", "_risk.csv")
+    risk_csv = out_dir / f"risk_{pred_date_str}.csv"
     pd.DataFrame([risk]).to_csv(risk_csv, index=False)
     print(f"[predict] Risk report saved to {risk_csv}")
 
     # Top 50 精选
-    top50_csv = output_csv.replace(".csv", "_top50.csv")
+    top50_csv = out_dir / f"top50_{pred_date_str}.csv"
     pred_out.head(50).to_csv(top50_csv, index=False)
     print(f"[predict] Top 50 saved to {top50_csv}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Daily prediction pipeline")
-    parser.add_argument("--qlib_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd")
+    parser.add_argument("--qlib_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_bwd")
     parser.add_argument("--model_id", default=None, help="Recorder ID, auto-detect if empty")
     parser.add_argument("--experiment", default="GRU_mid_cap_60d", help="Experiment name")
     parser.add_argument("--output", default=None, help="Output CSV path")
-    parser.add_argument("--instruments", default="mid_cap", help="Stock pool: mid_cap, csi300, all, small_cap, etc.")
-    parser.add_argument("--no-update", action="store_true", help="Skip data update")
+    parser.add_argument("--instruments", default="mid_cap_filtered", help="Stock pool: mid_cap_filtered, csi300, all, small_cap, etc.")
+    parser.add_argument("--update", action="store_true", help="Run data update before prediction")
+    parser.add_argument("--pred_date", default=None, help="Prediction date (YYYY-MM-DD), default: latest calendar date")
     parser.add_argument("--list", action="store_true", help="List all trained models with tags")
     parser.add_argument("--tag", default=None, help="Set tag on a model: key=value (use with --model_id)")
     parser.add_argument("--production", action="store_true", help="Mark the model as production (shortcut for --tag status=production)")
@@ -572,6 +565,6 @@ if __name__ == "__main__":
         model_recorder_id=args.model_id,
         experiment_name=args.experiment,
         output_csv=args.output,
-        skip_update=args.no_update,
+        skip_update=not args.update,
         instruments=args.instruments,
     )

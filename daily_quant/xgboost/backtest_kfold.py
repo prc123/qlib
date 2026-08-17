@@ -46,6 +46,7 @@ def main():
     parser.add_argument("--qlib_data_dir", default=r"C:\Users\pp\.qlib\qlib_data\etf_data")
     parser.add_argument("--exp_prefix", default="XGB_KFold")
     parser.add_argument("--n_folds", type=int, default=3)
+    parser.add_argument("--fold", type=int, default=None, help="Backtest a single fold only (0-indexed); default = ensemble of all folds")
     parser.add_argument("--backtest_exp", default="backtest_kfold")
 
     parser.add_argument("--backtest_start", default="2025-07-01")
@@ -59,13 +60,18 @@ def main():
     parser.add_argument("--deal_price", default="open", choices=["open", "close"])
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
     print(f"qlib initialized, data: {args.qlib_data_dir}")
 
     # Load K models
+    if args.fold is not None:
+        fold_list = [args.fold]
+    else:
+        fold_list = list(range(args.n_folds))
+
     models = []
     tags = None
-    for k in range(args.n_folds):
+    for k in fold_list:
         exp_name = f"{args.exp_prefix}_fold{k}"
         recs = R.list_recorders(experiment_name=exp_name)
         recs = [r for r in recs.values() if "trained_model" in r.list_artifacts()]
@@ -83,33 +89,39 @@ def main():
     handler_class = tags.get("handler_class", "Alpha158ETF")
     label_type = tags.get("label_type", "sharpe")
     share_only = tags.get("share_only", "True") == "True"
+    is_base = handler_class == "Alpha158Base"
     print(f"Ensemble of {len(models)} models, handler={handler_class}, "
           f"label={label_type}, share_only={share_only}")
 
     ensemble = EnsembleModel(models)
 
+    handler_kwargs = {
+        "start_time": "2022-01-01",
+        "end_time": args.backtest_end,
+        "fit_start_time": "2022-01-01",
+        "fit_end_time": "2024-12-31",
+        "instruments": args.instruments,
+        "label_type": label_type,
+        "infer_processors": [
+            {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature", "clip_outlier": True}},
+            {"class": "Fillna", "kwargs": {"fields_group": "feature"}},
+        ],
+        "learn_processors": [
+            {"class": "DropnaLabel"},
+            {"class": "CSRankNorm", "kwargs": {"fields_group": "label"}},
+        ],
+    }
+    if not is_base:
+        handler_kwargs.update({
+            "use_alpha_factors": False,
+            "include_prem_disc": not share_only,
+        })
+
     ds = DatasetH(
         handler={
             "class": handler_class,
             "module_path": "daily_quant.handler.alpha158_etf",
-            "kwargs": {
-                "start_time": "2022-01-01",
-                "end_time": args.backtest_end,
-                "fit_start_time": "2022-01-01",
-                "fit_end_time": "2024-12-31",
-                "instruments": args.instruments,
-                "use_alpha_factors": False,
-                "label_type": label_type,
-                "include_prem_disc": not share_only,
-                "infer_processors": [
-                    {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature", "clip_outlier": True}},
-                    {"class": "Fillna", "kwargs": {"fields_group": "feature"}},
-                ],
-                "learn_processors": [
-                    {"class": "DropnaLabel"},
-                    {"class": "CSRankNorm", "kwargs": {"fields_group": "label"}},
-                ],
-            },
+            "kwargs": handler_kwargs,
         },
         segments={
             "test": (args.backtest_start, args.backtest_end),

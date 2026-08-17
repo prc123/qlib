@@ -54,7 +54,7 @@ def main():
 
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
     print(f"qlib initialized, data: {args.qlib_data_dir}")
 
     exp_name = args.exp_name or f"XGB_Alpha158_{args.instruments}"
@@ -93,6 +93,7 @@ def main():
     handler_extra = {}
     if handler_class == "Alpha158ETF":
         handler_extra["include_prem_disc"] = not share_only
+    if handler_class in ("Alpha158ETF", "Alpha158Date"):
         handler_extra["label_type"] = label_type
 
     ds = DatasetH(

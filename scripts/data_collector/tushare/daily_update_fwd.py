@@ -102,18 +102,27 @@ def daily_update_fwd(
     delay: float = 0.3,
     update_index_weights: bool = False,
     index_weight_freq: str = "ME",
+    include_alpha_factors: bool = True,
 ):
     """Run the daily data update pipeline for forward-adjusted data.
 
     Steps:
     1. Identify the last trading date in existing qlib data
-    2. Bulk-download new stock & index data from Tushare by date
-    3. Normalize (extend mode: align with existing data scales)
-    4. Dump to qlib binary format
-    5. Refresh instrument end dates to match calendar
-    6. (Optional) Update index constituent weights
+    2. Bulk-download new OHLCV + daily_basic from Tushare
+    3. Download new alpha factor data (moneyflow + margin)
+    4. Normalize (extend mode: align with existing data scales)
+    5. Dump to qlib binary format
+    6. Refresh instrument end dates to match calendar
+    7. (Optional) Update index constituent weights
+
+    Parameters
+    ----------
+    include_alpha_factors : bool
+        If True, also download moneyflow + margin for the new trading days.
+        Adds ~2-3 seconds per trading day. Default True.
     """
     from collector import Run
+    from alpha_factors import AlphaFactorCollector
 
     qlib_dir = Path(qlib_data_1d_dir).expanduser().resolve()
     if not qlib_dir.exists():
@@ -129,6 +138,11 @@ def daily_update_fwd(
     if max_workers is None:
         max_workers = max(multiprocessing.cpu_count() - 2, 1)
 
+    if source_dir is None:
+        source_dir = str(CUR_DIR.joinpath("source_fwd"))
+    if normalize_dir is None:
+        normalize_dir = str(CUR_DIR.joinpath("normalize_fwd"))
+
     run = Run(
         source_dir=source_dir,
         normalize_dir=normalize_dir,
@@ -136,9 +150,9 @@ def daily_update_fwd(
         interval="1d",
     )
 
-    # Step 1: Bulk-download new data
+    # Step 1: Bulk-download new OHLCV + daily_basic
     logger.info("=" * 50)
-    logger.info("Step 1/5: Bulk-downloading new data from Tushare...")
+    logger.info("Step 1/6: Bulk-downloading OHLCV + daily_basic from Tushare...")
     run.download_data_bulk(
         delay=delay,
         start=trading_date,
@@ -146,15 +160,31 @@ def daily_update_fwd(
         listed_only=True,
     )
 
-    # Step 2: Normalize (extend mode)
+    # Step 2: Download alpha factors for new dates
+    if include_alpha_factors:
+        logger.info("=" * 50)
+        logger.info("Step 2/6: Downloading alpha factors (moneyflow + margin)...")
+        alpha = AlphaFactorCollector(source_dir=run.source_dir, delay=delay)
+        try:
+            alpha.download_moneyflow(start=trading_date, end=end_date)
+        except Exception as e:
+            logger.warning(f"Moneyflow download failed: {e}")
+        try:
+            alpha.download_margin(start=trading_date, end=end_date)
+        except Exception as e:
+            logger.warning(f"Margin download failed: {e}")
+    else:
+        logger.info("Step 2/6: Skipped (include_alpha_factors=False).")
+
+    # Step 3: Normalize (extend mode)
     logger.info("=" * 50)
-    logger.info("Step 2/5: Normalizing (extend mode)...")
+    logger.info("Step 3/6: Normalizing (extend mode)...")
     run.max_workers = max_workers
     run.normalize_data_1d_extend(str(qlib_dir))
 
-    # Step 3: Dump to binary
+    # Step 4: Dump to binary
     logger.info("=" * 50)
-    logger.info("Step 3/5: Dumping to qlib binary format...")
+    logger.info("Step 4/6: Dumping to qlib binary format...")
     _dump = DumpDataUpdate(
         data_path=str(run.normalize_dir),
         qlib_dir=str(qlib_dir),
@@ -163,15 +193,15 @@ def daily_update_fwd(
     )
     _dump.dump()
 
-    # Step 4: Refresh instrument end dates
+    # Step 5: Refresh instrument end dates
     logger.info("=" * 50)
-    logger.info("Step 4/5: Refreshing instrument end dates...")
+    logger.info("Step 5/6: Refreshing instrument end dates...")
     _refresh_instruments(qlib_dir)
 
-    # Step 5: (Optional) Update index weights
+    # (Optional) Update index weights
     if update_index_weights:
         logger.info("=" * 50)
-        logger.info("Step 5/5: Updating index constituent weights...")
+        logger.info("Extra: Updating index constituent weights...")
         run.download_index_weights(
             index_code="000300.SH",
             freq=index_weight_freq,
@@ -182,9 +212,6 @@ def daily_update_fwd(
             index_code="000300.SH",
             qlib_dir=str(qlib_dir),
         )
-    else:
-        logger.info("=" * 50)
-        logger.info("Step 5/5: Skipped (use --update_index_weights to enable).")
 
     logger.info("=" * 50)
     logger.info("Daily update (fwd) completed successfully!")

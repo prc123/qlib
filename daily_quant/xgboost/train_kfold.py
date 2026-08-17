@@ -56,6 +56,8 @@ def main():
     parser.add_argument("--n_folds", type=int, default=3)
     parser.add_argument("--label_type", default="sharpe", choices=["return", "sharpe", "ret_vol", "score"])
     parser.add_argument("--share_only", action="store_true", default=True)
+    parser.add_argument("--base_alpha158", action="store_true", help="Use vanilla Alpha158 (no fund/date/ETF factors)")
+    parser.add_argument("--model_type", default="xgboost", choices=["xgboost", "lightgbm", "catboost"], help="Model type")
 
     parser.add_argument("--train_start", default="2022-01-01")
     parser.add_argument("--valid_end", default="2025-06-30")
@@ -73,10 +75,14 @@ def main():
     parser.add_argument("--threads", type=int, default=16)
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
 
-    handler_class = "Alpha158ETF"
-    handler_module = "daily_quant.handler.alpha158_etf"
+    if args.base_alpha158:
+        handler_class = "Alpha158Base"
+        handler_module = "daily_quant.handler.alpha158_etf"
+    else:
+        handler_class = "Alpha158ETF"
+        handler_module = "daily_quant.handler.alpha158_etf"
     learn_processors = [
         {"class": "DropnaLabel"},
         {"class": "CSRankNorm", "kwargs": {"fields_group": "label"}},
@@ -98,15 +104,18 @@ def main():
             "fit_start_time": args.train_start,
             "fit_end_time": train_end,
             "instruments": args.instruments,
-            "use_alpha_factors": False,
             "label_type": args.label_type,
-            "include_prem_disc": not args.share_only,
             "infer_processors": [
                 {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature", "clip_outlier": True}},
                 {"class": "Fillna", "kwargs": {"fields_group": "feature"}},
             ],
             "learn_processors": learn_processors,
         }
+        if not args.base_alpha158:
+            handler_kwargs.update({
+                "use_alpha_factors": False,
+                "include_prem_disc": not args.share_only,
+            })
 
         ds = DatasetH(
             handler={
@@ -120,13 +129,34 @@ def main():
             },
         )
 
-        model = XGBModel(
-            eval_metric="rmse",
-            eta=args.lr, max_depth=args.max_depth,
-            subsample=args.subsample, colsample_bytree=args.colsample_bytree,
-            reg_lambda=args.reg_lambda, reg_alpha=args.reg_alpha,
-            nthread=args.threads, tree_method="hist",
-        )
+        if args.model_type == "xgboost":
+            model = XGBModel(
+                eval_metric="rmse",
+                eta=args.lr, max_depth=args.max_depth,
+                subsample=args.subsample, colsample_bytree=args.colsample_bytree,
+                reg_lambda=args.reg_lambda, reg_alpha=args.reg_alpha,
+                nthread=args.threads, tree_method="hist",
+            )
+        elif args.model_type == "lightgbm":
+            from qlib.contrib.model.gbdt import LGBModel
+            model = LGBModel(
+                loss="mse",
+                learning_rate=args.lr,
+                num_leaves=2 ** args.max_depth - 1,
+                subsample=args.subsample,
+                colsample_bytree=args.colsample_bytree,
+                lambda_l2=args.reg_lambda,
+                num_threads=args.threads,
+            )
+        elif args.model_type == "catboost":
+            from qlib.contrib.model.catboost_model import CatBoostModel
+            model = CatBoostModel(
+                loss="RMSE",
+                learning_rate=args.lr,
+                depth=args.max_depth,
+                l2_leaf_reg=args.reg_lambda,
+                thread_count=args.threads,
+            )
 
         exp_name = f"{args.exp_prefix}_fold{k}"
         with R.start(experiment_name=exp_name):
@@ -145,7 +175,7 @@ def main():
                 status="completed", model_type="XGBoost",
                 instruments=args.instruments, handler_class=handler_class,
                 label_type=args.label_type, share_only=str(args.share_only),
-                fold=str(k), total_feat=str(171 if args.share_only else 172),
+                fold=str(k), total_feat=str(157 if args.base_alpha158 else (171 if args.share_only else 172)),
             )
             print(f"Fold {k} done, recorder_id: {rid}")
 

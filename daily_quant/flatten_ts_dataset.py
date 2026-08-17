@@ -19,63 +19,10 @@ Usage
     )
 """
 
-import copy
 import numpy as np
 import pandas as pd
-from qlib.data.dataset import TSDatasetH, TSDataSampler
+from qlib.data.dataset import TSDatasetH
 from qlib.data.dataset.handler import DataHandlerLP
-
-
-class FixedNormalizedTSDataSampler(TSDataSampler):
-    """Use nanmean/nanstd to avoid NaN contagion. Handles both 2D (single)
-    and 3D (batched) access."""
-
-    def __getitem__(self, idx):
-        data = super().__getitem__(idx)
-        if data.ndim == 2:
-            # Single sample: (step_len, n_features+1)
-            process_data = data[:, 0:-1]
-            data_mean = np.nanmean(process_data, axis=0)
-            data_std = np.nanstd(process_data, axis=0)
-            data_std = np.where(data_std < 1e-5, 1.0, data_std)
-            normalized = (process_data - data_mean) / data_std
-            normalized = np.clip(normalized, -5, 5)
-            normalized = np.where(np.isnan(normalized), 0, normalized)
-            data[:, 0:-1] = normalized
-        else:
-            # Batched: (batch_size, step_len, n_features+1)
-            process_data = data[:, :, 0:-1]
-            data_mean = np.nanmean(process_data, axis=1, keepdims=True)
-            data_std = np.nanstd(process_data, axis=1, keepdims=True)
-            data_std = np.where(data_std < 1e-5, 1.0, data_std)
-            normalized = (process_data - data_mean) / data_std
-            normalized = np.clip(normalized, -5, 5)
-            normalized = np.where(np.isnan(normalized), 0, normalized)
-            data[:, :, 0:-1] = normalized
-        return data
-
-
-class _RawTSDatasetH(TSDatasetH):
-    """TSDatasetH that uses FixedNormalizedTSDataSampler."""
-
-    def _prepare_seg(self, slc, **kwargs):
-        dtype = kwargs.pop("dtype", None)
-        if not isinstance(slc, slice):
-            slc = slice(*slc)
-        flt_col = kwargs.pop("flt_col", None) or self.flt_col
-        ext_slice = self._extend_slice(slc, self.cal, self.step_len)
-        data = super(TSDatasetH, self)._prepare_seg(ext_slice, **kwargs)
-        flt_kwargs = copy.deepcopy(kwargs)
-        if flt_col is not None:
-            flt_kwargs["col_set"] = flt_col
-            flt_data = super(TSDatasetH, self)._prepare_seg(ext_slice, **flt_kwargs)
-            assert len(flt_data.columns) == 1
-        else:
-            flt_data = None
-        return FixedNormalizedTSDataSampler(
-            data=data, start=slc.start, end=slc.stop,
-            step_len=self.step_len, dtype=dtype, flt_data=flt_data,
-        )
 
 
 class FlattenedTSDatasetH:
@@ -99,7 +46,7 @@ class FlattenedTSDatasetH:
     """
 
     def __init__(self, handler, segments, step_len=20, flatten_mode="stats"):
-        self._ts_dataset = _RawTSDatasetH(
+        self._ts_dataset = TSDatasetH(
             handler=handler, segments=segments, step_len=step_len,
         )
         self.step_len = step_len

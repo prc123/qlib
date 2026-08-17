@@ -19,6 +19,9 @@ Usage::
 Feature count: 170 + 2 = 172 (use_alpha_factors=False) or 182 (True).
 """
 
+from qlib.contrib.data.handler import Alpha158
+from qlib.contrib.data.loader import Alpha158DL
+
 from daily_quant.handler.alpha158_date import Alpha158Date
 
 _ETF_FIELDS = [
@@ -30,6 +33,35 @@ _ETF_NAMES = [
     "SHARE_CHG",
     "PREM_DISC",
 ]
+
+
+class Alpha158Base(Alpha158):
+    """Vanilla Alpha158 without VWAP (ETF data lacks $vwap) and no extras.
+
+    157 features (158 base - 1 VWAP removed). Supports label_type:
+      - "return" (default): standard 1-day forward return
+      - "sharpe": 5-day forward return / 20-day vol
+    """
+
+    def __init__(self, label_type="return", **kwargs):
+        self._label_type = label_type
+        super().__init__(**kwargs)
+
+    def get_feature_config(self):
+        conf = {
+            "kbar": {},
+            "price": {"windows": [0], "feature": ["OPEN", "HIGH", "LOW"]},
+            "rolling": {},
+        }
+        return Alpha158DL.get_feature_config(conf)
+
+    def get_label_config(self):
+        if self._label_type == "sharpe":
+            return (
+                ["(Ref($close, -5) / $close - 1) / Std($close / Ref($close, 1) - 1, 20)"],
+                ["LABEL0"],
+            )
+        return super().get_label_config()
 
 
 class Alpha158ETF(Alpha158Date):
@@ -51,7 +83,7 @@ class Alpha158ETF(Alpha158Date):
         self._label_type = label_type
         self._include_prem_disc = include_prem_disc
         self._score_weights = score_weights
-        super().__init__(use_alpha_factors=use_alpha_factors, **kwargs)
+        super().__init__(use_alpha_factors=use_alpha_factors, label_type=label_type, **kwargs)
 
     def get_feature_config(self):
         fields, names = super().get_feature_config()

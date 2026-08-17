@@ -363,16 +363,23 @@ if __name__ == "__main__":
     # -- Try PredictionRiskMonitor first (from pred_score_*.csv) --
     pattern = re.compile(r"pred_score_(\d{4}-\d{2}-\d{2})\.csv$")
     score_files: dict[str, Path] = {}
+    pred_dir = cur / "predictions"
+    if pred_dir.is_dir():
+        for f in sorted(pred_dir.glob("*/*.csv")):
+            m = pattern.match(f.name)
+            if m:
+                score_files[m.group(1)] = f
+    # Fallback: legacy flat files
     for f in sorted(cur.glob("pred_score_*.csv")):
         m = pattern.match(f.name)
-        if m:
+        if m and m.group(1) not in score_files:
             score_files[m.group(1)] = f
 
     if score_files:
         print("=== PredictionRiskMonitor (from pred_score_*.csv) ===\n")
         mon = PredictionRiskMonitor(score_files)
         print(mon.status(model_train_end="2024-12-31",
-                         qlib_dir=r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd"))
+                         qlib_dir=r"C:\Users\pp\.qlib\qlib_data\cn_data_bwd"))
         print("\n=== History ===")
         for idx, row in mon.history().iterrows():
             w = int(row["warnings"])

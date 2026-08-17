@@ -108,6 +108,11 @@ def full_download(
     if max_workers is None:
         max_workers = max(multiprocessing.cpu_count() - 2, 1)
 
+    if source_dir is None:
+        source_dir = str(CUR_DIR.joinpath("source_fwd"))
+    if normalize_dir is None:
+        normalize_dir = str(CUR_DIR.joinpath("normalize_fwd"))
+
     # Initialize the collector Run class
     run = Run(
         source_dir=source_dir,

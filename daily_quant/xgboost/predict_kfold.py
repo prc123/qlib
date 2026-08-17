@@ -65,7 +65,7 @@ def main():
     parser.add_argument("--lookback", default="2022-01-01", help="Feature start time")
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
 
     # Load latest data date from calendar
     cal = pd.read_csv(Path(args.qlib_data_dir) / "calendars" / "day.txt")

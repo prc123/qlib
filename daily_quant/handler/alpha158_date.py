@@ -130,10 +130,15 @@ class Alpha158Date(Alpha158):
     use_alpha_factors : bool, default True
         If False, exclude moneyflow/margin fields (total 170 features).
         Set to False when alpha-factor data has not been downloaded yet.
+    label_type : str, default "return"
+        Label formulation:
+          - "return" : 5-day forward return (default)
+          - "sharpe" : forward return / historical vol (risk-adjusted)
     """
 
-    def __init__(self, use_alpha_factors=True, **kwargs):
+    def __init__(self, use_alpha_factors=True, label_type="return", **kwargs):
         self._use_alpha_factors = use_alpha_factors
+        self._label_type = label_type
         super().__init__(**kwargs)
 
     def get_feature_config(self):
@@ -154,6 +159,11 @@ class Alpha158Date(Alpha158):
         return fields, names
 
     def get_label_config(self):
+        if self._label_type == "sharpe":
+            return (
+                ["(Ref($close, -5) / $close - 1) / Std($close / Ref($close, 1) - 1, 20)"],
+                ["LABEL0"],
+            )
         return (["Ref($close, -5) / $close - 1"], ["LABEL0"])
 
 

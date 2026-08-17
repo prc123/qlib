@@ -56,12 +56,21 @@ def build_name_map() -> dict[str, str]:
 
 
 def discover_pred_files() -> dict[str, Path]:
-    """Scan CUR_DIR for ``pred_score_YYYY-MM-DD.csv``, return {date_str: path}."""
+    """Scan ``predictions/YYYY-MM-DD/`` for ``pred_score_*.csv``,
+    return {trade_date_str: path}.
+    """
     pattern = re.compile(r"pred_score_(\d{4}-\d{2}-\d{2})\.csv$")
     result: dict[str, Path] = {}
+    pred_dir = CUR_DIR / "predictions"
+    if pred_dir.is_dir():
+        for f in sorted(pred_dir.glob("*/*.csv")):
+            m = pattern.match(f.name)
+            if m:
+                result[m.group(1)] = f
+    # Fallback: also check CUR_DIR directly for legacy files
     for f in sorted(CUR_DIR.glob("pred_score_*.csv")):
         m = pattern.match(f.name)
-        if m:
+        if m and m.group(1) not in result:
             result[m.group(1)] = f
     return result
 
@@ -152,8 +161,10 @@ def run(skip_risk: bool = False):
             buy_list = list(available.index[:n_buy])
             holdings = keep
 
+        missing_from_scores = {s for s in holdings if s not in scores.index}
         holdings |= set(buy_list)
         holdings -= set(sell_list)
+        holdings -= missing_from_scores
 
         next_trade_date = trade_date or (pd.Timestamp(pred_date) + pd.DateOffset(days=1)).strftime("%Y-%m-%d")
 
@@ -166,11 +177,15 @@ def run(skip_risk: bool = False):
 
         for sym in sell_list:
             records.append({**base, "action": "SELL", "instrument": sym,
-                            "name": name_map.get(sym, ""), "score": round(float(scores[sym]), 6)})
+                            "name": name_map.get(sym, ""), "score": round(float(scores.get(sym, np.nan)), 6)})
 
         for sym in sorted(holdings - set(buy_list)):
-            records.append({**base, "action": "HOLD", "instrument": sym,
-                            "name": name_map.get(sym, ""), "score": round(float(scores[sym]), 6)})
+            in_scores = sym in scores.index
+            records.append({**base,
+                            "action": "HOLD" if in_scores else "MISSING",
+                            "instrument": sym,
+                            "name": name_map.get(sym, ""),
+                            "score": round(float(scores[sym]), 6) if in_scores else np.nan})
 
     result = pd.DataFrame(records)
     out_path = CUR_DIR / "trade_signals.csv"

@@ -201,8 +201,8 @@ class TushareCollectorCN1d(BaseCollector):
             }
         )
 
-        # Calculate adjclose from adj_factor (前复权: forward-adjusted)
-        df["adjclose"] = df["close"] / df["adj_factor"]
+        # Calculate adjclose from adj_factor (后复权: backward-adjusted)
+        df["adjclose"] = df["close"] * df["adj_factor"]
 
         # Add normalized symbol
         df["symbol"] = symbol
@@ -228,9 +228,14 @@ class TushareCollectorCN1d(BaseCollector):
         _end = self.end_datetime.strftime(_format)
 
         index_map = {
-            "csi300": ("000300.SH", "sh000300"),
-            "csi100": ("000903.SH", "sh000903"),
-            "csi500": ("000905.SH", "sh000905"),
+            "csi300":  ("000300.SH", "sh000300"),
+            "csi100":  ("000903.SH", "sh000903"),
+            "csi500":  ("000905.SH", "sh000905"),
+            "csi800":  ("000906.SH", "sh000906"),
+            "csi1000": ("000852.SH", "sh000852"),
+            "sse50":   ("000016.SH", "sh000016"),
+            "star50":  ("000688.SH", "sh000688"),
+            "chinext": ("399006.SZ", "sz399006"),
         }
 
         for _index_name, (_index_code, _save_name) in index_map.items():
@@ -283,6 +288,13 @@ class TushareNormalizeCN1d(BaseNormalize):
     DAILY_FORMAT = "%Y-%m-%d"
 
     def _get_calendar_list(self) -> Iterable[pd.Timestamp]:
+        # Try local calendar first to avoid szse.cn timeout
+        qlib_dir = self.kwargs.get("old_qlib_data_dir", "")
+        if qlib_dir:
+            cal_path = Path(qlib_dir) / "calendars" / "day.txt"
+            if cal_path.exists():
+                cal_df = pd.read_csv(cal_path, header=None)
+                return sorted(pd.to_datetime(cal_df.iloc[:, 0]).tolist())
         return get_calendar_list("ALL")
 
     @staticmethod
@@ -297,9 +309,9 @@ class TushareNormalizeCN1d(BaseNormalize):
     def _adjusted_price(self, df):
         """Adjust OHLCV prices using factor = adjclose / close.
 
-        With forward-adjusted (前复权) adjclose = close / adj_factor,
-        the factor is 1/adj_factor, which lowers current prices to
-        historical levels. Volume is NOT adjusted — raw traded shares
+        With backward-adjusted (后复权) adjclose = close * adj_factor,
+        the factor is adj_factor, which raises historical prices to
+        current levels. Volume is NOT adjusted — raw traded shares
         are already correct at each point in time.
         """
         if df.empty:
@@ -400,10 +412,12 @@ class TushareNormalizeCN1dExtend(TushareNormalizeCN1d):
     scanning the full multi-index on every file.
     """
 
-    def __init__(self, old_qlib_data_dir, date_field_name="date", symbol_field_name="symbol", **kwargs):
-        super().__init__(date_field_name, symbol_field_name)
+    def __init__(self, old_qlib_data_dir, date_field_name="date", symbol_field_name="symbol",
+                 norm_dir=None, **kwargs):
+        super().__init__(date_field_name, symbol_field_name, old_qlib_data_dir=old_qlib_data_dir, **kwargs)
         self.column_list = ["open", "high", "low", "close", "volume", "factor", "change"]
         self._old_latest = self._build_old_latest_map(old_qlib_data_dir)
+        self._norm_dir = Path(norm_dir) if norm_dir else None
 
     def _build_old_latest_map(self, qlib_data_dir):
         """Read only the last ~10 calendar days of old data per symbol.
@@ -441,19 +455,27 @@ class TushareNormalizeCN1dExtend(TushareNormalizeCN1d):
     def normalize(self, df):
         # Trim to new rows BEFORE normalizing, so we don't process full history
         # on every daily update.
+        if df is None or df.empty:
+            return None
         symbol_name = str(df[self._symbol_field_name].iloc[0]).upper()
         entry = self._old_latest.get(symbol_name)
         if entry is not None:
             latest_date, _ = entry
-            df[self._date_field_name] = pd.to_datetime(df[self._date_field_name])
+            df[self._date_field_name] = pd.to_datetime(df[self._date_field_name], format="mixed")
             df = df[df[self._date_field_name] >= pd.Timestamp(latest_date)]
             if df.empty:
                 return None
         # Normalize only the trimmed (new) rows
         df = super().normalize(df)
+        if df is None or df.empty:
+            logger.warning(f"normalize returned empty for {symbol_name}")
+            return None
         df.set_index(self._date_field_name, inplace=True)
         if entry is None:
             return df.reset_index()
+        if df.empty:
+            logger.warning(f"normalize result empty after set_index for {symbol_name}")
+            return None
         latest_date, old_latest_data = entry
         new_latest_data = df.iloc[0]
         for col in self.column_list[:-1]:
@@ -461,7 +483,31 @@ class TushareNormalizeCN1dExtend(TushareNormalizeCN1d):
                 df[col] = df[col] / (new_latest_data[col] / old_latest_data[col])
             else:
                 df[col] = df[col] * (old_latest_data[col] / new_latest_data[col])
-        return df.drop(df.index[0]).reset_index()
+        new_rows = df.drop(df.index[0]).reset_index()
+
+        # Merge with existing normalize file to keep full history intact
+        if self._norm_dir is not None:
+            sym_lower = symbol_name.lower()
+            existing_file = self._norm_dir / f"{sym_lower}.csv"
+            if existing_file.exists():
+                logger.info(f"merge {symbol_name}: reading existing normalize file")
+                existing = pd.read_csv(existing_file)
+                existing[self._date_field_name] = pd.to_datetime(
+                    existing[self._date_field_name], format="mixed"
+                )
+                new_rows[self._date_field_name] = pd.to_datetime(
+                    new_rows[self._date_field_name], format="mixed"
+                )
+                combined = pd.concat([existing, new_rows], ignore_index=True)
+                combined = combined.drop_duplicates(
+                    subset=[self._symbol_field_name, self._date_field_name]
+                )
+                logger.info(f"merge {symbol_name}: existing={len(existing)} + new={len(new_rows)} -> combined={len(combined)}")
+                return combined
+            else:
+                logger.info(f"merge {symbol_name}: no existing file, returning new_rows only ({len(new_rows)} rows)")
+
+        return new_rows
 
 
 class Run(BaseRun):
@@ -670,7 +716,7 @@ class Run(BaseRun):
                 return f"{exchange.lower()}{code}"
 
         merged["symbol"] = merged["ts_code"].apply(_norm)
-        merged["date"] = merged["trade_date"]
+        merged["date"] = pd.to_datetime(merged["trade_date"]).dt.strftime("%Y-%m-%d")
 
         base_cols = ["symbol", "date", "open", "high", "low", "close", "vol", "adjclose"]
         output_cols = base_cols + basic_cols
@@ -704,9 +750,14 @@ class Run(BaseRun):
         logger.info("Downloading index data (CSI300/500/100)...")
         _fmt = "%Y%m%d"
         index_config = [
+            ("000016.SH", "sh000016"),
             ("000300.SH", "sh000300"),
-            ("000903.SH", "sh000100"),
-            ("000905.SH", "sh000500"),
+            ("000688.SH", "sh000688"),
+            ("000852.SH", "sh000852"),
+            ("000903.SH", "sh000903"),
+            ("000905.SH", "sh000905"),
+            ("000906.SH", "sh000906"),
+            ("399006.SZ", "sz399006"),
         ]
         for idx_code, save_name in index_config:
             try:
@@ -783,6 +834,7 @@ class Run(BaseRun):
             date_field_name=date_field_name,
             symbol_field_name=symbol_field_name,
             old_qlib_data_dir=old_qlib_data_dir,
+            norm_dir=str(self.normalize_dir),
         )
         yc.normalize()
 
@@ -920,9 +972,14 @@ class Run(BaseRun):
 
         # Map index code to name
         index_name_map = {
+            "000016.SH": "sse50",
             "000300.SH": "csi300",
+            "000688.SH": "star50",
+            "000852.SH": "csi1000",
             "000903.SH": "csi100",
             "000905.SH": "csi500",
+            "000906.SH": "csi800",
+            "399006.SZ": "chinext",
         }
         index_name = index_name_map.get(index_code, index_code.replace(".", "").lower())
 
@@ -958,7 +1015,7 @@ class Run(BaseRun):
         logger.info(f"saved {saved_count} weight snapshots to {output_dir}")
 
     def download_all_index_weights(self, freq: str = "ME", delay: float = 0.5):
-        """Download constituent weights for CSI100, CSI300, and CSI500.
+        """Download constituent weights for all configured indices.
 
         Convenience wrapper around ``download_index_weights``.
 
@@ -966,7 +1023,16 @@ class Run(BaseRun):
         --------
         $ python collector.py download_all_index_weights --freq QE
         """
-        for _code in ["000300.SH", "000903.SH", "000905.SH"]:
+        for _code in [
+            "000016.SH",  # SSE 50
+            "000300.SH",  # CSI 300
+            "000688.SH",  # STAR 50
+            "000852.SH",  # CSI 1000
+            "000903.SH",  # CSI 100
+            "000905.SH",  # CSI 500
+            "000906.SH",  # CSI 800
+            "399006.SZ",  # ChiNext
+        ]:
             self.download_index_weights(index_code=_code, freq=freq, delay=delay)
 
     def parse_index_instruments(
@@ -1003,15 +1069,25 @@ class Run(BaseRun):
         $ python collector.py parse_index_instruments --index_code 000300.SH --qlib_dir ~/.qlib/qlib_data/cn_data
         """
         index_name_map = {
+            "000016.SH": "sse50",
             "000300.SH": "csi300",
+            "000688.SH": "star50",
+            "000852.SH": "csi1000",
             "000903.SH": "csi100",
             "000905.SH": "csi500",
+            "000906.SH": "csi800",
+            "399006.SZ": "chinext",
         }
         index_name = index_name_map.get(index_code, index_code.replace(".", "").lower())
         bench_start_map = {
+            "000016.SH": "2004-01-02",
             "000300.SH": "2005-01-01",
+            "000688.SH": "2020-07-23",
+            "000852.SH": "2014-10-17",
             "000903.SH": "2006-05-29",
             "000905.SH": "2007-01-15",
+            "000906.SH": "2007-01-15",
+            "399006.SZ": "2010-06-01",
         }
         bench_start = bench_start_map.get(index_code, "2005-01-01")
 

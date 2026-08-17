@@ -1,5 +1,5 @@
 """
-Train GRU model with Alpha158Date handler (171 features: 158 Alpha158 + 6 fundamental + 7 date/board).
+Train GRU model with Alpha158Date handler (170 features: 158 Alpha158 + 6 fundamental + 7 date/board).
 
 Usage
 -----
@@ -13,8 +13,10 @@ import copy
 import argparse
 from pathlib import Path
 
+# os.environ["CUDA_VISIBLE_DEVICES"] = ""  # uncomment if GPU page-file errors
+
 # Ensure project root is in sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import numpy as np
 import pandas as pd
@@ -26,67 +28,30 @@ import qlib
 from qlib.constant import REG_CN
 from qlib.utils import flatten_dict, get_or_create_path
 from qlib.workflow import R
-from qlib.data.dataset import TSDatasetH, TSDataSampler
+from qlib.data.dataset import TSDatasetH
 from qlib.data.dataset.handler import DataHandlerLP
 from qlib.model.utils import ConcatDataset
 from qlib.contrib.model.pytorch_gru_ts import GRU
 
 
 # ============================================================================
-# 1. Custom dataset classes (fixed normalization)
-# ============================================================================
-
-class FixedNormalizedTSDataSampler(TSDataSampler):
-    """Use nanmean/nanstd to avoid NaN contagion across rows."""
-
-    def __getitem__(self, idx):
-        data = super().__getitem__(idx)
-        process_data = data[:, 0:-1]
-        if process_data.shape[0] == 0:
-            return data
-        with np.errstate(all="ignore"):
-            data_mean = np.nanmean(process_data, axis=0)
-            data_std = np.nanstd(process_data, axis=0)
-        data_mean = np.where(np.isnan(data_mean), 0, data_mean)
-        data_std = np.where(np.isnan(data_std) | (data_std < 1e-5), 1.0, data_std)
-        normalized = (process_data - data_mean) / data_std
-        normalized = np.clip(normalized, -5, 5)
-        normalized = np.where(np.isnan(normalized), 0, normalized)
-        data[:, 0:-1] = normalized
-        return data
-
-
-class FixedNormalizedTSDatasetH(TSDatasetH):
-    def _prepare_seg(self, slc, **kwargs):
-        dtype = kwargs.pop("dtype", None)
-        if not isinstance(slc, slice):
-            slc = slice(*slc)
-        flt_col = kwargs.pop("flt_col", None) or self.flt_col
-        ext_slice = self._extend_slice(slc, self.cal, self.step_len)
-        data = super(TSDatasetH, self)._prepare_seg(ext_slice, **kwargs)
-        flt_kwargs = copy.deepcopy(kwargs)
-        if flt_col is not None:
-            flt_kwargs["col_set"] = flt_col
-            flt_data = super(TSDatasetH, self)._prepare_seg(ext_slice, **flt_kwargs)
-            assert len(flt_data.columns) == 1
-        else:
-            flt_data = None
-        return FixedNormalizedTSDataSampler(
-            data=data, start=slc.start, end=slc.stop,
-            step_len=self.step_len, dtype=dtype, flt_data=flt_data,
-        )
-
-
-# ============================================================================
-# 2. GRU model with progress bar
+# 1. GRU model with progress bar
 # ============================================================================
 
 class GRUWithProgress(GRU):
     """GRU + tqdm + R.log_metrics."""
 
     def fit(self, dataset, evals_result=dict(), save_path=None, reweighter=None):
-        dl_train = dataset.prepare("train", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
-        dl_valid = dataset.prepare("valid", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
+        # Detect handler type: V2 uses per-group feature cols, V1 uses "feature"
+        handler = dataset.handler
+        if hasattr(handler, 'FEATURE_GROUPS'):
+            from daily_quant.handler.alpha158_date import Alpha158DateV2
+            col_set = Alpha158DateV2.feature_col_set()
+        else:
+            col_set = ["feature", "label"]
+
+        dl_train = dataset.prepare("train", col_set=col_set, data_key=DataHandlerLP.DK_L)
+        dl_valid = dataset.prepare("valid", col_set=col_set, data_key=DataHandlerLP.DK_L)
         if dl_train.empty or dl_valid.empty:
             raise ValueError("Empty data from dataset, please check your dataset config.")
 
@@ -114,6 +79,10 @@ class GRUWithProgress(GRU):
         self.logger.info("training...")
         self.fitted = True
 
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.train_optimizer, mode="max", factor=0.5, patience=3,
+        )
+
         pbar = tqdm(range(self.n_epochs), desc="Training", unit="epoch")
         for step in pbar:
             self.train_epoch(train_loader)
@@ -121,6 +90,8 @@ class GRUWithProgress(GRU):
             val_loss, val_score = self.test_epoch(valid_loader)
             evals_result["train"].append(train_score)
             evals_result["valid"].append(val_score)
+
+            scheduler.step(val_score)
 
             R.log_metrics(train_score=train_score, valid_score=val_score, step=step)
 
@@ -137,10 +108,12 @@ class GRUWithProgress(GRU):
                 "train": f"{train_score:.4f}",
                 "valid": f"{val_score:.4f}",
                 "best": f"{best_score:.4f}",
+                "lr": f"{scheduler.get_last_lr()[0]:.2e}",
             })
 
         self.logger.info("best score: %.6lf @ %d" % (best_score, best_epoch))
         self.GRU_model.load_state_dict(best_param)
+        self.GRU_model.rnn.flatten_parameters()
         torch.save(best_param, save_path)
         if self.use_gpu:
             torch.cuda.empty_cache()
@@ -157,18 +130,22 @@ def main():
     parser.add_argument("--n_epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--early_stop", type=int, default=15)
+    parser.add_argument("--early_stop", type=int, default=10)
     parser.add_argument("--hidden_size", type=int, default=64)
     parser.add_argument("--num_layers", type=int, default=2)
-    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--qlib_data_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd")
+    parser.add_argument("--qlib_data_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_bwd")
     parser.add_argument("--exp_name", default=None, help="Experiment name (default: GRU_{instruments}_{step_len}d)")
+    parser.add_argument("--use_alpha_factors", action="store_true",
+                        help="Include moneyflow/margin alpha factors (requires alpha_factors data in qlib)")
+    parser.add_argument("--use_group_norm", action="store_true",
+                        help="Use Alpha158DateV2 with per-group normalization")
     args = parser.parse_args()
 
     INSTRUMENTS = args.instruments
     STEP_LEN = args.step_len
-    TOTAL_FEAT = 171  # 158 (Alpha158) + 6 (fundamental) + 7 (date+board)
+    TOTAL_FEAT = 180 if args.use_alpha_factors else 170
 
     # --- Register date operators via qlib.init ---
     from daily_quant.ops.date_ops import DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit
@@ -180,35 +157,65 @@ def main():
     )
     print(f"qlib initialized, data: {args.qlib_data_dir}")
 
-    # --- Build dataset ---
-    data_handler_config = {
-        "start_time": "2022-01-01",
-        "end_time": "2026-05-28",
-        "fit_start_time": "2022-01-01",
-        "fit_end_time": "2024-12-31",
-        "instruments": INSTRUMENTS,
-    }
+    # --- Handler config ---
+    if args.use_group_norm:
+        HANDLER_CLASS = "Alpha158DateV2"
+        # V2 handles normalization internally; only pass learn_processors
+        data_handler_config = {
+            "start_time": "2022-01-01",
+            "end_time": "2026-05-28",
+            "fit_start_time": "2022-01-01",
+            "fit_end_time": "2026-05-28",
+            "instruments": INSTRUMENTS,
+            "use_alpha_factors": args.use_alpha_factors,
+            "learn_processors": [
+                {"class": "DropnaLabel"},  # 3-class label, no rank norm needed
+            ],
+        }
+        from daily_quant.handler.alpha158_date import Alpha158DateV2 as HandlerClass
+        col_set = HandlerClass.feature_col_set(use_alpha_factors=args.use_alpha_factors)
+    else:
+        HANDLER_CLASS = "Alpha158Date"
+        data_handler_config = {
+            "start_time": "2022-01-01",
+            "end_time": "2026-05-28",
+            "fit_start_time": "2022-01-01",
+            "fit_end_time": "2026-05-28",
+            "instruments": INSTRUMENTS,
+            "use_alpha_factors": args.use_alpha_factors,
+            "infer_processors": [
+                {"class": "RobustZScoreNorm", "kwargs": {
+                    "fields_group": "feature",
+                    "clip_outlier": True,
+                }},
+                {"class": "Fillna", "kwargs": {"fields_group": "feature"}},
+            ],
+            "learn_processors": [
+                {"class": "DropnaLabel"},  # 3-class label, no rank norm needed
+            ],
+        }
+        col_set = ["feature", "label"]
 
     dataset_config = {
-        "class": "FixedNormalizedTSDatasetH",
+        "class": "TSDatasetH",
         "kwargs": {
             "handler": {
-                "class": "Alpha158Date",
+                "class": HANDLER_CLASS,
                 "module_path": "daily_quant.handler.alpha158_date",
                 "kwargs": data_handler_config,
             },
             "segments": {
                 "train": ("2022-01-01", "2024-12-31"),
-                "valid": ("2025-01-01", "2025-06-30"),
-                "test": ("2025-01-01", "2026-05-27"),
+                "valid": ("2025-01-01", "2026-01-01"),
+                "test": ("2026-01-01", "2026-05-27"),
             },
             "step_len": STEP_LEN,
         },
     }
 
-    dataset = FixedNormalizedTSDatasetH(
+    dataset = TSDatasetH(
         handler={
-            "class": "Alpha158Date",
+            "class": HANDLER_CLASS,
             "module_path": "daily_quant.handler.alpha158_date",
             "kwargs": data_handler_config,
         },
@@ -216,9 +223,10 @@ def main():
         step_len=STEP_LEN,
     )
 
-    train_ts = dataset.prepare("train", col_set="feature")
+    train_ts = dataset.prepare("train", col_set=col_set)
     print(f"Training samples: {len(train_ts)}")
-    print(f"Sample shape: {train_ts[0].shape}  -> [{STEP_LEN} days, {TOTAL_FEAT} features]")
+    actual_feat = train_ts[0].shape[-1]  # last dim is feature count (incl label if present)
+    print(f"Sample shape: {train_ts[0].shape}  -> [{STEP_LEN} days, {actual_feat} cols] (configured: {TOTAL_FEAT} features)")
 
     # --- Build model ---
     model_config = {
@@ -234,7 +242,7 @@ def main():
             "early_stop": args.early_stop,
             "loss": "mse",
             "optimizer": "adam",
-            "GPU": 0,
+            "GPU": 0,  # CPU only to avoid Windows page-file errors
             "seed": args.seed,
             "n_jobs": 0,
         },
@@ -255,6 +263,10 @@ def main():
             model_type="GRU",
             instruments=INSTRUMENTS,
             step_len=str(STEP_LEN),
+            use_alpha_factors=str(args.use_alpha_factors),
+            use_group_norm=str(args.use_group_norm),
+            handler_class=HANDLER_CLASS,
+            total_feat=str(TOTAL_FEAT),
             train_date=pd.Timestamp.now().strftime("%Y-%m-%d"),
         )
         print(f"Training done, recorder_id: {rid}")

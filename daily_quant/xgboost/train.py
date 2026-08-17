@@ -109,8 +109,9 @@ def main():
     parser.add_argument("--ranking_loss", action="store_true", help="Use pairwise ranking loss instead of MSE")
     parser.add_argument("--ic_early_stop", action="store_true", help="Use Rank IC for early stopping (keep MSE loss)")
     parser.add_argument("--etf_factors", action="store_true", help="Use Alpha158ETF handler (share + nav factors)")
-    parser.add_argument("--label_type", default="return", choices=["return", "sharpe", "ret_vol", "score"], help="Label formulation (requires --etf_factors)")
+    parser.add_argument("--label_type", default="return", choices=["return", "sharpe", "ret_vol", "score"], help="Label formulation ('sharpe' works for stocks and ETFs; ret_vol/score require --etf_factors)")
     parser.add_argument("--share_only", action="store_true", help="Only use share factor, drop premium/discount (requires --etf_factors)")
+    parser.add_argument("--model_type", default="xgboost", choices=["xgboost", "lightgbm", "catboost"], help="Model type")
 
     parser.add_argument("--train_start", default="2022-01-01")
     parser.add_argument("--train_end", default="2024-12-31")
@@ -132,7 +133,7 @@ def main():
 
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
     print(f"qlib initialized")
 
     TOTAL_FEAT = 180 if args.use_alpha_factors else 170
@@ -173,11 +174,10 @@ def main():
         ],
         "learn_processors": learn_processors,
     }
-    if args.etf_factors:
-        if args.label_type != "return":
-            handler_kwargs["label_type"] = args.label_type
-        if args.share_only:
-            handler_kwargs["include_prem_disc"] = False
+    if args.label_type != "return" and not args.multi_horizon and not args.ranking_loss:
+        handler_kwargs["label_type"] = args.label_type
+    if args.etf_factors and args.share_only:
+        handler_kwargs["include_prem_disc"] = False
 
     ds = DatasetH(
         handler={
@@ -216,13 +216,34 @@ def main():
             nthread=args.threads, tree_method="hist",
         )
     else:
-        model = XGBModel(
-            eval_metric="rmse",
-            eta=args.lr, max_depth=args.max_depth,
-            subsample=args.subsample, colsample_bytree=args.colsample_bytree,
-            reg_lambda=args.reg_lambda, reg_alpha=args.reg_alpha,
-            nthread=args.threads, tree_method="hist",
-        )
+        if args.model_type == "xgboost":
+            model = XGBModel(
+                eval_metric="rmse",
+                eta=args.lr, max_depth=args.max_depth,
+                subsample=args.subsample, colsample_bytree=args.colsample_bytree,
+                reg_lambda=args.reg_lambda, reg_alpha=args.reg_alpha,
+                nthread=args.threads, tree_method="hist",
+            )
+        elif args.model_type == "lightgbm":
+            from qlib.contrib.model.gbdt import LGBModel
+            model = LGBModel(
+                loss="mse",
+                learning_rate=args.lr,
+                num_leaves=2 ** args.max_depth - 1,
+                subsample=args.subsample,
+                colsample_bytree=args.colsample_bytree,
+                lambda_l2=args.reg_lambda,
+                num_threads=args.threads,
+            )
+        elif args.model_type == "catboost":
+            from qlib.contrib.model.catboost_model import CatBoostModel
+            model = CatBoostModel(
+                loss="RMSE",
+                learning_rate=args.lr,
+                depth=args.max_depth,
+                l2_leaf_reg=args.reg_lambda,
+                thread_count=args.threads,
+            )
 
     exp_name = args.exp_name or f"XGB_Alpha158_{args.instruments}"
     if args.multi_horizon:

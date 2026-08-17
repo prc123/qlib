@@ -9,7 +9,7 @@ Usage
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import copy, argparse
 import numpy as np
@@ -21,7 +21,7 @@ import qlib
 from qlib.constant import REG_CN
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
-from qlib.data.dataset import TSDatasetH, TSDataSampler
+from qlib.data.dataset import TSDatasetH
 from qlib.data.dataset.handler import DataHandlerLP
 from qlib.model.utils import ConcatDataset
 from qlib.utils import get_or_create_path
@@ -77,6 +77,20 @@ class QuickModel(GRU):
         if self._use_gpu:
             self.GRU_model = self.GRU_model.cuda()
 
+        self.device = "cuda" if self._use_gpu else "cpu"
+        self.logger = qlib.log.get_module_logger("QuickModel")
+        self.train_epoch = self._make_train_epoch()
+        self.test_epoch = self._make_test_epoch()
+
+    def __getstate__(self):
+        """Exclude unpicklable local functions from serialization."""
+        state = self.__dict__.copy()
+        for k in ("train_epoch", "test_epoch", "logger"):
+            state.pop(k, None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
         self.logger = qlib.log.get_module_logger("QuickModel")
         self.train_epoch = self._make_train_epoch()
         self.test_epoch = self._make_test_epoch()
@@ -169,42 +183,6 @@ class QuickModel(GRU):
             torch.cuda.empty_cache()
 
 
-# --- Custom dataset (same as train_date.py) ---
-class FixedNormalizedTSDataSampler(TSDataSampler):
-    def __getitem__(self, idx):
-        data = super().__getitem__(idx)
-        process_data = data[:, 0:-1]
-        data_mean = np.nanmean(process_data, axis=0)
-        data_std = np.nanstd(process_data, axis=0)
-        data_std = np.where(data_std < 1e-5, 1.0, data_std)
-        normalized = (process_data - data_mean) / data_std
-        normalized = np.clip(normalized, -5, 5)
-        normalized = np.where(np.isnan(normalized), 0, normalized)
-        data[:, 0:-1] = normalized
-        return data
-
-
-class FixedNormalizedTSDatasetH(TSDatasetH):
-    def _prepare_seg(self, slc, **kwargs):
-        dtype = kwargs.pop("dtype", None)
-        if not isinstance(slc, slice):
-            slc = slice(*slc)
-        flt_col = kwargs.pop("flt_col", None) or self.flt_col
-        ext_slice = self._extend_slice(slc, self.cal, self.step_len)
-        data = super(TSDatasetH, self)._prepare_seg(ext_slice, **kwargs)
-        flt_kwargs = copy.deepcopy(kwargs)
-        if flt_col is not None:
-            flt_kwargs["col_set"] = flt_col
-            flt_data = super(TSDatasetH, self)._prepare_seg(ext_slice, **flt_kwargs)
-            assert len(flt_data.columns) == 1
-        else:
-            flt_data = None
-        return FixedNormalizedTSDataSampler(
-            data=data, start=slc.start, end=slc.stop,
-            step_len=self.step_len, dtype=dtype, flt_data=flt_data,
-        )
-
-
 # --- Main ---
 def main():
     parser = argparse.ArgumentParser()
@@ -213,20 +191,39 @@ def main():
     parser.add_argument("--topk", type=int, default=10)
     parser.add_argument("--n_epochs", type=int, default=5)
     parser.add_argument("--hidden_size", type=int, default=32)
-    parser.add_argument("--qlib_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd")
+    parser.add_argument("--qlib_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_bwd")
     args = parser.parse_args()
 
     qlib.init(provider_uri=args.qlib_dir, region=REG_CN, custom_ops=_CUSTOM_OPS)
 
-    TOTAL_FEAT = 170  # Alpha158Date without BoardLimit
+    TOTAL_FEAT = 20   # FilterCol 保留的 20 个 Alpha158 特征
 
     data_handler_config = {
         "start_time": "2022-01-01", "end_time": "2026-05-27",
         "fit_start_time": "2022-01-01", "fit_end_time": "2024-12-31",
         "instruments": args.instruments,
+        "infer_processors": [
+            {"class": "FilterCol", "kwargs": {
+                "fields_group": "feature",
+                "col_list": [
+                    "RESI5", "WVMA5", "RSQR5", "KLEN", "RSQR10", "CORR5", "CORD5", "CORR10",
+                    "ROC60", "RESI10", "VSTD5", "RSQR60", "CORR60", "WVMA60", "STD5",
+                    "RSQR20", "CORD60", "CORD10", "CORR20", "KLOW",
+                ],
+            }},
+            {"class": "RobustZScoreNorm", "kwargs": {
+                "fields_group": "feature",
+                "clip_outlier": True,
+            }},
+            {"class": "Fillna", "kwargs": {"fields_group": "feature"}},
+        ],
+        "learn_processors": [
+            {"class": "DropnaLabel"},
+            {"class": "CSRankNorm", "kwargs": {"fields_group": "label"}},
+        ],
     }
 
-    dataset = FixedNormalizedTSDatasetH(
+    dataset = TSDatasetH(
         handler={"class": "Alpha158Date", "module_path": "daily_quant.handler.alpha158_date",
                  "kwargs": data_handler_config},
         segments={"train": ("2022-01-01", "2024-12-31"), "valid": ("2025-01-01", "2025-06-30"),

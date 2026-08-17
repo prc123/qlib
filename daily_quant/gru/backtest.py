@@ -1,5 +1,5 @@
 """
-Backtest evaluation for Alpha158Date model (171 features with BoardLimit).
+Backtest evaluation for Alpha158Date model (170 features with BoardLimit).
 
 Usage
 -----
@@ -9,7 +9,7 @@ Usage
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import copy
 import argparse
@@ -23,7 +23,7 @@ from qlib.constant import REG_CN
 from qlib.utils import init_instance_by_config, flatten_dict
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
-from qlib.data.dataset import TSDatasetH, TSDataSampler
+from qlib.data.dataset import TSDatasetH
 from qlib.data.dataset.handler import DataHandlerLP
 from qlib.model.utils import ConcatDataset
 from qlib.utils import get_or_create_path
@@ -36,49 +36,17 @@ from daily_quant.ops.date_ops import DayOfWeek, Month, Quarter, DayOfMonth, Week
 _CUSTOM_OPS = [DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit]
 
 
-class FixedNormalizedTSDataSampler(TSDataSampler):
-    def __getitem__(self, idx):
-        data = super().__getitem__(idx)
-        process_data = data[:, 0:-1]
-        if process_data.shape[0] == 0:
-            return data
-        with np.errstate(all="ignore"):
-            data_mean = np.nanmean(process_data, axis=0)
-            data_std = np.nanstd(process_data, axis=0)
-        data_mean = np.where(np.isnan(data_mean), 0, data_mean)
-        data_std = np.where(np.isnan(data_std) | (data_std < 1e-5), 1.0, data_std)
-        normalized = (process_data - data_mean) / data_std
-        normalized = np.clip(normalized, -5, 5)
-        normalized = np.where(np.isnan(normalized), 0, normalized)
-        data[:, 0:-1] = normalized
-        return data
-
-
-class FixedNormalizedTSDatasetH(TSDatasetH):
-    def _prepare_seg(self, slc, **kwargs):
-        dtype = kwargs.pop("dtype", None)
-        if not isinstance(slc, slice):
-            slc = slice(*slc)
-        flt_col = kwargs.pop("flt_col", None) or self.flt_col
-        ext_slice = self._extend_slice(slc, self.cal, self.step_len)
-        data = super(TSDatasetH, self)._prepare_seg(ext_slice, **kwargs)
-        flt_kwargs = copy.deepcopy(kwargs)
-        if flt_col is not None:
-            flt_kwargs["col_set"] = flt_col
-            flt_data = super(TSDatasetH, self)._prepare_seg(ext_slice, **flt_kwargs)
-            assert len(flt_data.columns) == 1
-        else:
-            flt_data = None
-        return FixedNormalizedTSDataSampler(
-            data=data, start=slc.start, end=slc.stop,
-            step_len=self.step_len, dtype=dtype, flt_data=flt_data,
-        )
-
-
 class GRUWithProgress(GRU):
     def fit(self, dataset, evals_result=dict(), save_path=None, reweighter=None):
-        dl_train = dataset.prepare("train", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
-        dl_valid = dataset.prepare("valid", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
+        handler = dataset.handler
+        if hasattr(handler, 'FEATURE_GROUPS'):
+            from daily_quant.handler.alpha158_date import Alpha158DateV2
+            col_set = Alpha158DateV2.feature_col_set()
+        else:
+            col_set = ["feature", "label"]
+
+        dl_train = dataset.prepare("train", col_set=col_set, data_key=DataHandlerLP.DK_L)
+        dl_valid = dataset.prepare("valid", col_set=col_set, data_key=DataHandlerLP.DK_L)
         if dl_train.empty or dl_valid.empty:
             raise ValueError("Empty data from dataset")
         dl_train.config(fillna_type="ffill+bfill")
@@ -113,13 +81,37 @@ class GRUWithProgress(GRU):
         self.GRU_model.load_state_dict(best_param)
         torch.save(best_param, save_path)
 
+    def predict(self, dataset):
+        """Override GRU.predict to support V2 handler's multi-group col_set."""
+        if not self.fitted:
+            raise ValueError("model is not fitted yet!")
+
+        handler = dataset.handler
+        if hasattr(handler, 'FEATURE_GROUPS'):
+            from daily_quant.handler.alpha158_date import Alpha158DateV2
+            col_set = Alpha158DateV2.feature_col_set()
+        else:
+            col_set = ["feature", "label"]
+
+        dl_test = dataset.prepare("test", col_set=col_set, data_key=DataHandlerLP.DK_I)
+        dl_test.config(fillna_type="ffill+bfill")
+        test_loader = DataLoader(dl_test, batch_size=self.batch_size, num_workers=self.n_jobs)
+        self.GRU_model.eval()
+        preds = []
+        for data in test_loader:
+            feature = data[:, :, 0:-1].to(self.device)
+            with torch.no_grad():
+                pred = self.GRU_model(feature.float()).detach().cpu().numpy()
+            preds.append(pred)
+        return pd.Series(np.concatenate(preds), index=dl_test.get_index())
+
 
 # ============================================================================
 # Main
 # ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Backtest Alpha158Date (171-feat) model")
+    parser = argparse.ArgumentParser(description="Backtest Alpha158Date (170-feat) model")
     parser.add_argument("--model_id", default=None)
     parser.add_argument("--instruments", default="mid_cap")
     parser.add_argument("--step_len", type=int, default=60)
@@ -130,7 +122,10 @@ def main():
     parser.add_argument("--account", type=int, default=10_000_000)
     parser.add_argument("--no_limit", action="store_true", help="Skip limit_threshold for diagnosis")
     parser.add_argument("--board_limit", action="store_true", help="Use BoardLimit expression instead of float threshold")
-    parser.add_argument("--qlib_data_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd")
+    parser.add_argument("--score_thresh", type=float, default=None, help="Min prediction score to buy (e.g. 1.5 for 3-class model)")
+    parser.add_argument("--benchmark", default="SH000300")
+    parser.add_argument("--freq", default="day", choices=["day", "week"], help="Rebalance frequency")
+    parser.add_argument("--qlib_data_dir", default=r"C:\Users\pp\.qlib\qlib_data\cn_data_bwd")
     parser.add_argument("--exp_name", default="GRU_mid_cap_60d")
     args = parser.parse_args()
 
@@ -148,26 +143,58 @@ def main():
         raise ValueError(f"No model found in '{EXP_NAME}'. Run train_date.py first.")
     recs.sort(key=lambda r: r.info.get("end_time") or "", reverse=True)
     model_id = args.model_id or recs[0].id
-    tags = recs_dict[model_id].info.get("tags", {})
-    print(f"Model: {model_id}")
-    print(f"Tags: {tags}")
 
     recorder = R.get_recorder(recorder_id=model_id, experiment_name=EXP_NAME)
     model = recorder.load_object("trained_model")
+    print(f"Model: {model_id}")
     print(f"Model d_feat: {model.d_feat}")
 
-    # --- Build dataset ---
-    data_handler_config = {
-        "start_time": "2022-01-01",
-        "end_time": args.backtest_end,
-        "fit_start_time": "2022-01-01",
-        "fit_end_time": "2024-12-31",
-        "instruments": args.instruments,
-    }
+    # Tags are stored in MLflow, not in recorder.info
+    client_tags = recorder.client.get_run(model_id).data.tags
+    print(f"Tags: {client_tags}")
+    handler_class = client_tags.get("handler_class", "Alpha158Date")
+    use_alpha = client_tags.get("use_alpha_factors", "False") == "True"
+    use_group_norm = client_tags.get("use_group_norm", "False") == "True"
+    print(f"Handler: {handler_class}, alpha={use_alpha}, group_norm={use_group_norm}")
 
-    dataset = FixedNormalizedTSDatasetH(
+    # --- Build dataset matching training config ---
+    if use_group_norm:
+        # V2: per-group normalization handled internally
+        data_handler_config = {
+            "start_time": "2022-01-01",
+            "end_time": args.backtest_end,
+            "fit_start_time": "2022-01-01",
+            "fit_end_time": "2024-12-31",
+            "instruments": args.instruments,
+            "use_alpha_factors": use_alpha,
+            "learn_processors": [
+                {"class": "DropnaLabel"},
+                {"class": "CSRankNorm", "kwargs": {"fields_group": "label"}},
+            ],
+        }
+    else:
+        # V1: unified normalization
+        data_handler_config = {
+            "start_time": "2022-01-01",
+            "end_time": args.backtest_end,
+            "fit_start_time": "2022-01-01",
+            "fit_end_time": "2024-12-31",
+            "instruments": args.instruments,
+            "use_alpha_factors": use_alpha,
+            "infer_processors": [
+                {"class": "RobustZScoreNorm", "kwargs": {
+                    "fields_group": "feature", "clip_outlier": True}},
+                {"class": "Fillna", "kwargs": {"fields_group": "feature"}},
+            ],
+            "learn_processors": [
+                {"class": "DropnaLabel"},
+                {"class": "CSRankNorm", "kwargs": {"fields_group": "label"}},
+            ],
+        }
+
+    dataset = TSDatasetH(
         handler={
-            "class": "Alpha158Date",
+            "class": handler_class,
             "module_path": "daily_quant.handler.alpha158_date",
             "kwargs": data_handler_config,
         },
@@ -215,7 +242,7 @@ def main():
             print(f"  {inst}  ERROR")
 
     # ========================================================================
-    # Step 2: Backtest WITHOUT limit_threshold
+    # Step 2: Backtest
     # ========================================================================
     print("\n" + "=" * 60)
     print("=== 回测（无涨跌停限制） ===")
@@ -224,7 +251,7 @@ def main():
         "freq": "day",
         "deal_price": "open", "open_cost": 0.0005,
         "close_cost": 0.0015, "min_cost": 5,
-        "limit_threshold": None,  # strategy handles limit checks, not exchange
+        "limit_threshold": None,
     }
     print("limit checks: Strategy-level BoardLimit (10/20/30%)" if not args.no_limit else "limit checks: DISABLED")
 
@@ -232,7 +259,7 @@ def main():
         "executor": {
             "class": "SimulatorExecutor",
             "module_path": "qlib.backtest.executor",
-            "kwargs": {"time_per_step": "day", "generate_portfolio_metrics": True},
+            "kwargs": {"time_per_step": args.freq, "generate_portfolio_metrics": True},
         },
         "strategy": {
             "class": "BoardLimitTopkDropoutStrategy",
@@ -241,13 +268,14 @@ def main():
                 "model": model, "dataset": dataset,
                 "topk": args.topk, "n_drop": args.n_drop,
                 "check_limit": not args.no_limit,
+                "score_thresh": args.score_thresh,
             },
         },
         "backtest": {
             "start_time": args.backtest_start,
             "end_time": args.backtest_end,
             "account": args.account,
-            "benchmark": "SH000300",
+            "benchmark": args.benchmark,
             "exchange_kwargs": exchange_kwargs,
         },
     }
@@ -257,13 +285,13 @@ def main():
         ba_rid = sr_recorder.id
         sr = SignalRecord(model, dataset, sr_recorder)
         sr.generate()
-        par = PortAnaRecord(sr_recorder, port_analysis_config, "day")
+        par = PortAnaRecord(sr_recorder, port_analysis_config, args.freq)
         par.generate()
         print(f"Backtest done, recorder_id: {ba_rid}")
 
     # --- Results ---
     sr_recorder = R.get_recorder(recorder_id=ba_rid, experiment_name=BACKTEST_EXP)
-    report = sr_recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
+    report = sr_recorder.load_object(f"portfolio_analysis/report_normal_1{args.freq}.pkl")
     analysis = sr_recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
 
     print("\n" + "=" * 60)

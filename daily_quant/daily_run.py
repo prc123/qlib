@@ -44,7 +44,11 @@ class Tee:
         self.stdout = sys.stdout
 
     def write(self, s):
-        self.stdout.write(s)
+        try:
+            self.stdout.write(s)
+        except UnicodeEncodeError:
+            # Fallback: encode to GBK (console encoding), replace unencodable chars
+            self.stdout.write(s.encode("gbk", errors="replace").decode("gbk"))
         self.file.write(s)
 
     def flush(self):
@@ -75,7 +79,7 @@ def _run(python: str, script: Path, cwd: Path, args: list[str] = None):
 
 def main():
     python = sys.executable
-    qlib_dir = r"C:\Users\pp\.qlib\qlib_data\cn_data_fwd"
+    qlib_dir = r"C:\Users\pp\.qlib\qlib_data\cn_data_bwd"
     tushare_dir = ROOT / "scripts" / "data_collector" / "tushare"
 
     tee = Tee(LOG_FILE)
@@ -86,31 +90,31 @@ def main():
         log(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 每日任务开始")
         log()
 
-        # Step 1: 更新数据 (前复权版)
+        # Step 1: 更新数据 (后复权版)
         log(f"{'='*60}")
         log("Step 1/3: 更新 qlib 数据 (Tushare → qlib binary)")
         _run(python,
-             tushare_dir / "daily_update_fwd.py",
+             tushare_dir / "daily_update_bwd.py",
              cwd=tushare_dir,
              args=["--qlib_data_1d_dir", qlib_dir, "--delay", "0.3"])
 
-        # # Step 2: 预测
-        # log(f"{'='*60}")
-        # log("Step 2/3: 生成预测分数")
-        # _run(python,
-        #      CUR_DIR / "predict.py",
-        #      cwd=ROOT,
-        #      args=["--qlib_dir", qlib_dir, "--no-update"])
+        # Step 2: 预测
+        log(f"{'='*60}")
+        log("Step 2/3: 生成预测分数")
+        _run(python,
+             CUR_DIR / "gru" / "predict.py",
+             cwd=CUR_DIR,
+             args=["--qlib_dir", qlib_dir, "--instruments", "mid_cap_filtered"])
 
-        # # Step 3: 交易信号
-        # log(f"{'='*60}")
-        # log("Step 3/3: 生成交易信号")
-        # _run(python,
-        #      CUR_DIR / "trade_signals.py",
-        #      cwd=CUR_DIR)
+        # Step 3: 交易信号
+        log(f"{'='*60}")
+        log("Step 3/3: 生成交易信号")
+        _run(python,
+             CUR_DIR / "trade_signals.py",
+             cwd=CUR_DIR)
 
-        # log(f"{'='*60}")
-        # log(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 每日任务完成")
+        log(f"{'='*60}")
+        log(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 每日任务完成")
     finally:
         sys.stdout = tee.stdout
         tee.close()
