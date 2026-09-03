@@ -31,6 +31,8 @@ os.environ["NO_PROXY"] = "*"
 
 CUR_DIR = Path(__file__).resolve().parent
 sys.path.append(str(CUR_DIR.parent.parent))
+# Repo root so that the in-repo qlib package is importable from any cwd.
+sys.path.append(str(CUR_DIR.parent.parent.parent))
 
 from dump_bin import DumpDataAll
 

@@ -54,7 +54,7 @@ def main():
 
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
     print(f"qlib initialized, data: {args.qlib_data_dir}")
 
     exp_name = args.exp_name or f"XGB_Alpha158_{args.instruments}"

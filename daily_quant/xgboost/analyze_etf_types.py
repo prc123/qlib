@@ -16,7 +16,7 @@ def main():
     from daily_quant.ops.date_ops import DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit
 
     _CUSTOM_OPS = [DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit]
-    qlib.init(provider_uri='C:/Users/pp/.qlib/qlib_data/etf_data', region=REG_CN, custom_ops=_CUSTOM_OPS)
+    qlib.init(provider_uri='C:/Users/pp/.qlib/qlib_data/etf_data', region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
     pro = ts.pro_api('a2d2e11f92720e2a69fb021f4fa098a8a8e56c4800d0040b72306202')
 
     fund_df = pro.fund_basic(market='E')

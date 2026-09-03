@@ -61,7 +61,7 @@ def main():
     parser.add_argument("--freq", default="day", choices=["day", "week"])
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
 
     exp_names = args.models.split(",")
     models = [load_model(n) for n in exp_names]

@@ -12,6 +12,7 @@ Usage
 """
 import sys
 import argparse
+import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -27,6 +28,10 @@ from qlib.contrib.model.xgboost import XGBModel
 from daily_quant.ops.date_ops import DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit
 
 _CUSTOM_OPS = [DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit]
+
+TRACKING_URI = "file:" + str(Path(__file__).resolve().parents[2] / "mlruns_daily")
+
+os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 
 def compute_folds(train_start, valid_end, n_folds):
@@ -51,7 +56,8 @@ def compute_folds(train_start, valid_end, n_folds):
 def main():
     parser = argparse.ArgumentParser(description="K-fold XGBoost ETF training")
     parser.add_argument("--instruments", default="stock")
-    parser.add_argument("--qlib_data_dir", default=r"C:\Users\pp\.qlib\qlib_data\etf_data")
+    parser.add_argument("--qlib_data_dir",
+                        default=str(Path.home() / ".qlib" / "qlib_data" / "etf_data"))
     parser.add_argument("--exp_prefix", default="XGB_KFold")
     parser.add_argument("--n_folds", type=int, default=3)
     parser.add_argument("--label_type", default="sharpe", choices=["return", "sharpe", "ret_vol", "score"])
@@ -75,7 +81,8 @@ def main():
     parser.add_argument("--threads", type=int, default=16)
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
+    R.set_uri(TRACKING_URI)
 
     if args.base_alpha158:
         handler_class = "Alpha158Base"

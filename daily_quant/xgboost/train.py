@@ -133,7 +133,7 @@ def main():
 
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
     print(f"qlib initialized")
 
     TOTAL_FEAT = 180 if args.use_alpha_factors else 170

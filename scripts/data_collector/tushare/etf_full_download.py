@@ -1,5 +1,5 @@
 """
-Full download → normalize → dump pipeline for ETF data.
+Full download -> normalize -> dump pipeline for ETF data.
 
 Uses Tushare bulk-by-date download to fetch OHLCV + adj_factor for all
 Chinese ETFs, then normalizes and dumps to qlib binary format.
@@ -22,6 +22,9 @@ Usage
 
     # Custom source/normalize dirs
     $ python etf_full_download.py --source_dir ./etf_source --normalize_dir ./etf_normalize
+
+    # With exclude list (CSV containing 'symbol' column)
+    $ python etf_full_download.py --exclude_list ./etf_exclude_list.csv
 """
 
 import sys
@@ -52,13 +55,15 @@ def full_download(
     end_date: str = None,
     max_workers: int = None,
     delay: float = 0.3,
+    exclude_list: str = None,
 ):
     """Run the full historical ETF data download pipeline.
 
     Steps:
     1. Bulk-download all ETF data from Tushare by date
-    2. Normalize (fresh mode, no extend)
+    2. Normalize (fresh mode)
     3. Dump to qlib binary format
+    4. Optional: filter excluded ETFs
 
     Parameters
     ----------
@@ -80,6 +85,9 @@ def full_download(
         Default: ``cpu_count - 2`` (min 1).
     delay : float
         API call delay in seconds, default 0.3.
+    exclude_list : str
+        Path to CSV file containing symbols to exclude (must have a 'symbol' column).
+        If provided, these ETFs will be removed after dump.
     """
     from etf_collector import Run
 
@@ -133,6 +141,17 @@ def full_download(
         max_workers=max_workers,
     )
     _dump.dump()
+
+    # Step 4: Optional filter by exclude list
+    if exclude_list is not None and Path(exclude_list).exists():
+        logger.info("=" * 50)
+        logger.info("Step 4/4: Filtering excluded ETFs ...")
+        from filter_etf_by_list import filter_etf_qlib_data
+        filter_etf_qlib_data(
+            qlib_data_dir=str(qlib_dir),
+            exclude_list=exclude_list,
+            backup=False,
+        )
 
     logger.info("=" * 50)
     logger.info("ETF full download completed!")

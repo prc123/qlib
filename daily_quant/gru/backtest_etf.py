@@ -64,7 +64,7 @@ def main():
     parser.add_argument("--exp_name", default="GRU_ETF_sharpe_40d")
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
 
     recs = R.list_recorders(experiment_name=args.exp_name)
     recs = [r for r in recs.values() if "trained_model" in r.list_artifacts()]

@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import os
 os.environ["NO_PROXY"] = "*"
+os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 import numpy as np
 import pandas as pd
@@ -28,6 +29,8 @@ from qlib.data.dataset import DatasetH
 from daily_quant.ops.date_ops import DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit
 
 _CUSTOM_OPS = [DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit]
+
+TRACKING_URI = "file:" + str(Path(__file__).resolve().parents[2] / "mlruns_daily")
 
 
 class EnsembleModel:
@@ -58,14 +61,16 @@ def get_etf_names():
 def main():
     parser = argparse.ArgumentParser(description="Predict next-period TopK ETFs")
     parser.add_argument("--instruments", default="stock")
-    parser.add_argument("--qlib_data_dir", default=r"C:\Users\pp\.qlib\qlib_data\etf_data")
-    parser.add_argument("--exp_prefix", default="XGB_Current")
+    parser.add_argument("--qlib_data_dir",
+                        default=str(Path.home() / ".qlib" / "qlib_data" / "etf_data"))
+    parser.add_argument("--exp_prefix", default="XGB_KFold")
     parser.add_argument("--n_folds", type=int, default=3)
     parser.add_argument("--topk", type=int, default=30)
     parser.add_argument("--lookback", default="2022-01-01", help="Feature start time")
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
+    R.set_uri(TRACKING_URI)
 
     # Load latest data date from calendar
     cal = pd.read_csv(Path(args.qlib_data_dir) / "calendars" / "day.txt")

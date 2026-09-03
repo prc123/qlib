@@ -59,7 +59,8 @@ def get_etf_names():
 def main():
     parser = argparse.ArgumentParser(description="Generate historical ETF prediction scores")
     parser.add_argument("--instruments", default="stock")
-    parser.add_argument("--qlib_data_dir", default=r"C:\Users\pp\.qlib\qlib_data\etf_data")
+    parser.add_argument("--qlib_data_dir",
+                        default=str(Path.home() / ".qlib" / "qlib_data" / "etf_data"))
     parser.add_argument("--exp_prefix", default="XGB_Current")
     parser.add_argument("--n_folds", type=int, default=3)
     parser.add_argument("--start", default=None, help="Start date (default: 1 year before latest)")
@@ -68,7 +69,7 @@ def main():
     parser.add_argument("--out_dir", default="history", help="Output subdirectory under predictions/")
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
 
     cal = pd.read_csv(Path(args.qlib_data_dir) / "calendars" / "day.txt")
     latest_date = str(cal.iloc[-1, 0])

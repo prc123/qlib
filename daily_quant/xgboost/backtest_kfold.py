@@ -60,7 +60,7 @@ def main():
     parser.add_argument("--deal_price", default="open", choices=["open", "close"])
     args = parser.parse_args()
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
     print(f"qlib initialized, data: {args.qlib_data_dir}")
 
     # Load K models

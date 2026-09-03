@@ -28,7 +28,7 @@ _CUSTOM_OPS = [DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, Boa
 
 def evaluate_model(exp_name, instruments, qlib_data_dir, use_alpha=False, period="valid"):
     """Calculate IC metrics for a trained model."""
-    qlib.init(provider_uri=qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
+    qlib.init(provider_uri=qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
 
     recs_dict = R.list_recorders(experiment_name=exp_name)
     recs = [r for r in recs_dict.values() if "trained_model" in r.list_artifacts()]

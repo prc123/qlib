@@ -125,7 +125,7 @@ def main():
     STEP_LEN = args.step_len
     TOTAL_FEAT = 171  # Alpha158ETF share_only
 
-    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=4)
+    qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
     print(f"qlib initialized, data: {args.qlib_data_dir}")
 
     data_handler_config = {
