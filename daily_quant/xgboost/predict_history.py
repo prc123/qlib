@@ -10,15 +10,18 @@ Usage
 -----
     python daily_quant/xgboost/predict_history.py --start 2025-08-14
     python daily_quant/xgboost/predict_history.py --start 2025-08-14 --end 2026-08-13
+    python daily_quant/xgboost/predict_history.py --run_ids id0,id1,id2
 """
 import sys
 import argparse
+import pickle
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import os
 os.environ["NO_PROXY"] = "*"
+os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 import pandas as pd
 import qlib
@@ -29,6 +32,8 @@ from qlib.data.dataset import DatasetH
 from daily_quant.ops.date_ops import DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit
 
 _CUSTOM_OPS = [DayOfWeek, Month, Quarter, DayOfMonth, WeekOfYear, DayOfYear, BoardLimit]
+
+TRACKING_URI = "file:" + str(Path(__file__).resolve().parents[2] / "mlruns")
 
 
 class EnsembleModel:
@@ -58,10 +63,12 @@ def get_etf_names():
 
 def main():
     parser = argparse.ArgumentParser(description="Generate historical ETF prediction scores")
-    parser.add_argument("--instruments", default="stock")
+    parser.add_argument("--instruments", default="all")
     parser.add_argument("--qlib_data_dir",
                         default=str(Path.home() / ".qlib" / "qlib_data" / "etf_data"))
-    parser.add_argument("--exp_prefix", default="XGB_Current")
+    parser.add_argument("--exp_prefix", default="XGB_KFold")
+    parser.add_argument("--run_ids", default=None,
+                        help="Comma-separated fixed recorder IDs; one per fold")
     parser.add_argument("--n_folds", type=int, default=3)
     parser.add_argument("--start", default=None, help="Start date (default: 1 year before latest)")
     parser.add_argument("--end", default=None, help="End date (default: latest data date)")
@@ -70,6 +77,7 @@ def main():
     args = parser.parse_args()
 
     qlib.init(provider_uri=args.qlib_data_dir, region=REG_CN, custom_ops=_CUSTOM_OPS, kernels=1)
+    R.set_uri(TRACKING_URI)
 
     cal = pd.read_csv(Path(args.qlib_data_dir) / "calendars" / "day.txt")
     latest_date = str(cal.iloc[-1, 0])
@@ -83,16 +91,28 @@ def main():
     # Load K models
     models = []
     tags = None
+    fixed_ids = [item.strip() for item in args.run_ids.split(",")] if args.run_ids else None
+    if fixed_ids and len(fixed_ids) != args.n_folds:
+        raise ValueError(f"--run_ids needs exactly {args.n_folds} recorder IDs")
     for k in range(args.n_folds):
         exp_name = f"{args.exp_prefix}_fold{k}"
-        recs = R.list_recorders(experiment_name=exp_name)
-        recs = [r for r in recs.values() if "trained_model" in r.list_artifacts()]
-        if not recs:
-            raise ValueError(f"No model in '{exp_name}'. Run train_kfold.py first.")
-        recs.sort(key=lambda r: r.info.get("end_time") or "", reverse=True)
-        rid = recs[0].id
+        if fixed_ids:
+            rid = fixed_ids[k]
+        else:
+            recs = R.list_recorders(experiment_name=exp_name)
+            recs = [r for r in recs.values() if "trained_model" in r.list_artifacts()]
+            if not recs:
+                raise ValueError(f"No model in '{exp_name}'. Run train_kfold.py first.")
+            recs.sort(key=lambda r: r.info.get("end_time") or "", reverse=True)
+            rid = recs[0].id
         recorder = R.get_recorder(recorder_id=rid, experiment_name=exp_name)
-        model = recorder.load_object("trained_model")
+        if fixed_ids:
+            exp_id = R.get_exp(experiment_name=exp_name).id
+            model_path = Path(TRACKING_URI.removeprefix("file:")) / exp_id / rid / "artifacts" / "trained_model"
+            with model_path.open("rb") as f:
+                model = pickle.Unpickler(f).load()
+        else:
+            model = recorder.load_object("trained_model")
         models.append(model)
         if tags is None:
             tags = recorder.client.get_run(rid).data.tags
